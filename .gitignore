@@ -202,5 +202,7 @@ output/
 logs/
 models/
 results/
+runlogs/
+personal/
 
 
