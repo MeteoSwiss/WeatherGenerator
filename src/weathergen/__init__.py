@@ -12,15 +12,15 @@ import pdb
 import sys
 import time
 import traceback
+from pathlib import Path
 
 import pandas as pd
 
+import weathergen.utils.config as config
 from weathergen.train.trainer import Trainer
-from weathergen.utils.config import Config, load_overwrite_conf, load_private_conf
 from weathergen.utils.logger import init_loggers
 
 
-####################################################################################################
 def evaluate():
     """
     Evaluation function for WeatherGenerator model.
@@ -79,26 +79,17 @@ def evaluate():
     )
     parser.add_argument(
         "--private_config",
-        type=str,
+        type=Path,
         default=None,
         help="Path to private configuration file for paths.",
     )
 
     args = parser.parse_args()
 
-    # get the paths from the private config
-    private_cf = load_private_conf(args.private_config)
-
     # TODO: move somewhere else
     init_loggers()
 
-    # load config: if run_id is full path, it loads from there
-    model_path = private_cf["model_path"] if "model_path" in private_cf.keys() else "./models"
-    cf = Config.load(args.run_id, args.epoch, model_path)
-
-    # add parameters from private (paths) config
-    for k, v in private_cf.items():
-        setattr(cf, k, v)
+    cf = config.load_config(args.private_config, args.run_id, args.epoch, None)
 
     cf.run_history += [(cf.run_id, cf.istep)]
 
@@ -126,6 +117,88 @@ def evaluate():
 
 
 ####################################################################################################
+def train_continue() -> None:
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-id",
+        "--run_id",
+        type=str,
+        required=True,
+        help="run id of to be continued",
+    )
+    parser.add_argument(
+        "-e",
+        "--epoch",
+        type=int,
+        required=False,
+        default=-1,
+        help="epoch where to continue run",
+    )
+    parser.add_argument(
+        "-n",
+        "--run_id_new",
+        type=bool,
+        required=False,
+        default=False,
+        help="create new run id for cont'd run",
+    )
+    parser.add_argument(
+        "--private_config",
+        type=Path,
+        default=None,
+        help="Path to private configuration file for paths.",
+    )
+    parser.add_argument(
+        "--finetune_forecast",
+        action="store_true",
+        help="Fine tune for forecasting. It overwrites some of the Config settings.",
+    )
+
+    args = parser.parse_args()
+
+    cf = config.load_config(args.private_config, args.run_id, args.epoch, None)
+
+    # track history of run to ensure traceability of results
+    cf.run_history += [(cf.run_id, cf.istep)]
+
+    #########################
+    if args.finetune_forecast:
+        cf.forecast_delta_hrs = 0  # 12
+        cf.forecast_steps = 1  # [j for j in range(1,9) for i in range(4)]
+        cf.forecast_policy = "fixed"  # 'sequential_random' # 'fixed' #'sequential' #_random'
+        cf.forecast_freeze_model = True
+        cf.forecast_att_dense_rate = 1.0  # 0.25
+
+        if cf.forecast_freeze_model:
+            cf.with_fsdp = False
+            import torch
+
+            torch._dynamo.config.optimize_ddp = False
+
+        cf.fe_num_blocks = 8
+        cf.fe_num_heads = 16
+        cf.fe_dropout_rate = 0.1
+        cf.fe_with_qk_lnorm = True
+
+        cf.lr_start = 0.000001
+        cf.lr_max = 0.00003
+        cf.lr_final_decay = 0.00003
+        cf.lr_final = 0.0
+        cf.lr_steps_warmup = 1024
+        cf.lr_steps_cooldown = 4096
+        cf.lr_policy_warmup = "cosine"
+        cf.lr_policy_decay = "linear"
+        cf.lr_policy_cooldown = "linear"
+
+        cf.num_epochs = 12  # len(cf.forecast_steps) + 4
+        cf.istep = 0
+
+    trainer = Trainer()
+    trainer.run(cf, args.run_id, args.epoch, args.run_id_new)
+
+
+####################################################################################################
 def train() -> None:
     """
     Training function for WeatherGenerator model.
@@ -143,21 +216,19 @@ def train() -> None:
         "--run_id",
         type=str,
         default=None,
-        help="Run/model id of pretrained WeatherGenerator model to continue training. Defaults to None.",
+        help="Run id",
     )
-
     parser.add_argument(
         "--private_config",
-        type=str,
+        type=Path,
         default=None,
-        help="Path to private configuration file for paths.",
+        help="Path to private configuration file for paths",
     )
-
     parser.add_argument(
         "--config",
-        type=str,
+        type=Path,
         default=None,
-        help="Path to private configuration file for overwriting the defaults in the function body. Defaults to None.",
+        help="Optional experiment specfic configuration file",
     )
 
     args = parser.parse_args()
@@ -165,156 +236,17 @@ def train() -> None:
     # TODO: move somewhere else
     init_loggers()
 
-    # get the non-default configs: private and overwrite
-    private_cf = load_private_conf(args.private_config)
-    overwrite_cf = load_overwrite_conf(args.config)
+    cf = config.load_config(args.private_config, None, None, args.config)
 
-    cf = Config()
-
-    # directory where input streams are specified
-    # cf.streams_directory = './streams_large/'
-    cf.streams_directory = "./config/streams/streams_anemoi/"
-    # cf.streams_directory = "./config/streams/streams_mixed/"
-    # cf.streams_directory = "./streams_mixed/"
-
-    # embed_orientation : 'channels' or 'columns'
-    # channels: embedding is per channel for a token (#tokens=num_channels)
-    # columns:  embedding is per "column", all channels are embedded together (#tokens=token_size)
-    # the per-stream embedding paramters, in particular dim_embed, have to be chosen accordingly
-    cf.embed_orientation = "channels"
-    cf.embed_local_coords = True
-    # False since per cell coords are meaningless for cells
-    cf.embed_centroids_local_coords = False
-    cf.embed_size_centroids = 64
-    cf.embed_unembed_mode = "block"
-
-    cf.target_cell_local_prediction = True
-    cf.target_coords_local = True
-
-    # parameters for local assimilation engine
-    cf.ae_local_dim_embed = 1024  # 2048 #1024
-    cf.ae_local_num_blocks = 2
-    cf.ae_local_num_heads = 16
-    cf.ae_local_dropout_rate = 0.1
-    cf.ae_local_with_qk_lnorm = True
-
-    # assimilation engine local -> global adapter
-    cf.ae_local_num_queries = 2
-    cf.ae_local_queries_per_cell = False
-    cf.ae_adapter_num_heads = 16
-    cf.ae_adapter_embed = 128
-    cf.ae_adapter_with_qk_lnorm = True
-    cf.ae_adapter_with_residual = True
-    cf.ae_adapter_dropout_rate = 0.1
-
-    # parameters for global assimilation engine
-    cf.ae_global_dim_embed = 2048
-    cf.ae_global_num_blocks = 8
-    cf.ae_global_num_heads = 32
-    cf.ae_global_dropout_rate = 0.1
-    cf.ae_global_with_qk_lnorm = True
-    cf.ae_global_att_dense_rate = 0.2  # 0.25 : every 4-th block is dense attention
-    cf.ae_global_block_factor = 64
-    cf.ae_global_mlp_hidden_factor = 2
-
-    cf.pred_adapter_kv = False
-    cf.pred_self_attention = True
-    cf.pred_dyadic_dims = False
-    cf.pred_mlp_adaln = True
-
-    # forecasting engine
-    cf.forecast_delta_hrs = 0
-    cf.forecast_steps = 0  # [j for j in range(1,11) for i in range(1)]
-    cf.forecast_policy = None  #'fixed', 'sequential'
-    cf.forecast_freeze_model = False  # False
-    cf.forecast_att_dense_rate = 0.25
-
-    cf.fe_num_blocks = 0
-    cf.fe_num_heads = 16
-    cf.fe_dropout_rate = 0.1
-    cf.fe_with_qk_lnorm = True
-
-    cf.healpix_level = 5
-
-    # working precision
-    cf.with_mixed_precision = True
-    cf.with_flash_attention = True
     if cf.with_flash_attention:
         assert cf.with_mixed_precision
-    # compile entire model
-    cf.compile_model = False
-
-    cf.with_fsdp = True
-
-    cf.loss_fcts = [["mse", 1.0]]
-    cf.loss_fcts_val = [["mse", 1.0]]
-    # cf.loss_fcts = [['mse', 0.5], ['stats', 0.5]]
-    # cf.loss_fcts_val = [['mse', 0.5], ['stats', 0.5]]
-
-    cf.batch_size = 1
-    cf.batch_size_validation = 1
-
-    # forecast
-    cf.masking_mode = "forecast"
-    cf.masking_rate = 0.0
-    cf.masking_rate_sampling = True  # False
-    cf.sampling_rate_target = 1.0
-
-    cf.num_epochs = 24
-    cf.samples_per_epoch = 4096
-    cf.samples_per_validation = 512
-    cf.shuffle = True
-
-    cf.lr_scaling_policy = "sqrt"
-    cf.lr_start = 0.000001
-    cf.lr_max = 0.00003
-    cf.lr_final_decay = 0.000001
-    cf.lr_final = 0.0
-    cf.lr_steps_warmup = 256
-    cf.lr_steps_cooldown = 4096
-    cf.lr_policy_warmup = "cosine"
-    cf.lr_policy_decay = "linear"
-    cf.lr_policy_cooldown = "linear"
-
-    cf.grad_clip = 5.0
-    cf.weight_decay = 0.1
-    cf.norm_type = "LayerNorm"  #'LayerNorm' #'RMSNorm'
-    cf.nn_module = "te"
-
-    cf.start_date = 201301010000
-    cf.end_date = 202012310000
-    cf.start_date_val = 202101010000
-    cf.end_date_val = 202201010000
-    cf.len_hrs = 6
-    cf.step_hrs = 6
-    cf.input_window_steps = 1
-
-    cf.val_initial = False
-
-    cf.loader_num_workers = 8
     cf.data_loader_rng_seed = int(time.time())
-    cf.log_validation = 0
-
-    cf.istep = 0
-    cf.run_history = []
-
-    cf.run_id = args.run_id
-    cf.desc = ""
-
-    # overwrite parameters from private config
-    for k, v in private_cf.items():
-        setattr(cf, k, v)
-    cf.data_path = private_cf["data_path_anemoi"]  # for backward compatibility
-
-    # overwrite parameters from overwrite config
-    for k, v in overwrite_cf.items():
-        setattr(cf, k, v)
 
     trainer = Trainer(log_freq=20, checkpoint_freq=250, print_freq=10)
 
     try:
-        trainer.run(cf, private_cf)
-    except:
+        trainer.run(cf)
+    except Exception:
         extype, value, tb = sys.exc_info()
         traceback.print_exc()
         pdb.post_mortem(tb)
@@ -322,3 +254,4 @@ def train() -> None:
 
 if __name__ == "__main__":
     train()
+    # train_continue()
