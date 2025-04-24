@@ -253,5 +253,5 @@ def train() -> None:
 
 
 if __name__ == "__main__":
-    train()
-    # train_continue()
+    # train()
+    train_continue()
