@@ -309,6 +309,9 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
                             source_raw = torch.from_numpy(
                                 np.concatenate((coords, geoinfos, source), 1)
                             )
+                            
+                            if source_raw.isnan().any():
+                                nan_found = True
 
                             (ss_cells, ss_lens, ss_centroids) = self.tokenizer.batchify_source(
                                 stream_info,

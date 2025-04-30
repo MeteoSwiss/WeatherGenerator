@@ -514,6 +514,10 @@ class Trainer(Trainer_Base):
             torch.nn.utils.clip_grad_norm_(self.ddp_model.parameters(), max_norm=cf.grad_clip)
 
             # optimizer step
+            
+            if loss.isnan().any():
+                found_nan = True
+            
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
             self.optimizer.zero_grad()
