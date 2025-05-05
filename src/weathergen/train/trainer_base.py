@@ -80,8 +80,8 @@ class Trainer_Base:
         
         dist.init_process_group(
             backend="nccl",
-            init_method="tcp://" + master_node + ":1345",
-            timeout=datetime.timedelta(seconds=30 ),
+            init_method="tcp://" + master_node + ":57323",
+            timeout=datetime.timedelta(seconds=120 ),
             world_size=num_ranks,
             rank=rank,
         )
