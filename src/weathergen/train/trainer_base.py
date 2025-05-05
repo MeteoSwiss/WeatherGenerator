@@ -77,10 +77,11 @@ class Trainer_Base:
         rank = int(os.environ.get("SLURM_NODEID")) * ranks_per_node + local_rank
         num_ranks = int(os.environ.get("SLURM_NTASKS"))
 
+        
         dist.init_process_group(
             backend="nccl",
             init_method="tcp://" + master_node + ":1345",
-            timeout=datetime.timedelta(seconds=10 * 8192),
+            timeout=datetime.timedelta(seconds=30 ),
             world_size=num_ranks,
             rank=rank,
         )
