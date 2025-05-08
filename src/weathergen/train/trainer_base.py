@@ -76,12 +76,16 @@ class Trainer_Base:
         ranks_per_node = int(os.environ.get("SLURM_TASKS_PER_NODE", "1")[0])
         rank = int(os.environ.get("SLURM_NODEID")) * ranks_per_node + local_rank
         num_ranks = int(os.environ.get("SLURM_NTASKS"))
+        
+        master_port = os.environ.get("MASTER_PORT", "14321")
+        
+        print("KCT-info: using master node and master port: ", master_node, master_port)
 
         
         dist.init_process_group(
             backend="nccl",
-            init_method="tcp://" + master_node + ":57323",
-            timeout=datetime.timedelta(seconds=120 ),
+            init_method="tcp://" + master_node + ":" + master_port,
+            timeout=datetime.timedelta(seconds=60 ),
             world_size=num_ranks,
             rank=rank,
         )
