@@ -257,7 +257,7 @@ def read_metrics(
         run_id = cf.run_id
 
     # TODO: this should be a config option
-    df = pl.read_ndjson(f"./results/{run_id}/metrics.json")
+    df = pl.read_ndjson(f"/iopsstor/scratch/cscs/ktezcan/weathergen/results/{run_id}/metrics.json")
     if stage is not None:
         df = df.filter(pl.col("stage") == stage)
     df = df.drop("stage")
