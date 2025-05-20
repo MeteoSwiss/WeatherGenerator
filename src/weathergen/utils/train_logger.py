@@ -20,6 +20,7 @@ import numpy as np
 import polars as pl
 
 import weathergen.utils.config as config
+from weathergen.utils.metrics import read_metrics_file
 
 _weathergen_timestamp = "weathergen.timestamp"
 _weathergen_reltime = "weathergen.reltime"
@@ -294,7 +295,7 @@ def clean_df(df, columns: list[str] | None):
 
 def _clean_name(n: str) -> str:
     """Cleans the stream name to only retain alphanumeric characters"""
-    return "".join([c for c in n if c.isalnum()]).lower()
+    return "".join([c for c in n if c.isalnum()])
 
 
 def _key_loss(st_name: str, lf_name: str) -> str:
