@@ -159,7 +159,7 @@ def train_continue() -> None:
         "--run_id_new",
         type=bool,
         required=False,
-        default=False,
+        default=True,
         help="create new run id for cont'd run",
     )
     parser.add_argument(
