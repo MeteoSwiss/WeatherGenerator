@@ -258,7 +258,7 @@ def read_metrics(
         run_id = cf.run_id
 
     # TODO: this should be a config option
-    df = read_metrics_file(f"./results/{run_id}/metrics.json")
+    df = read_metrics_file(cf.run_path + f"/{run_id}/metrics.json")
     if stage is not None:
         df = df.filter(pl.col("stage") == stage)
     df = df.drop("stage")

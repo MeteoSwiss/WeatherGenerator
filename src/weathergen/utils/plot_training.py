@@ -313,7 +313,7 @@ if __name__ == "__main__":
         clean_out_folder()
 
     runs_ids = {
-        "fb89k61l": [34298989, "ERA5 test"],
+        "m4har28d": [34298989, "ERA5 test"],
     }
 
     runs_data = [TrainLogger.read(run_id) for run_id in runs_ids]
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     plot_lr(runs_ids, runs_data, runs_active)
 
     # plot performance
-    plot_utilization(runs_ids, runs_data, runs_active)
+    # plot_utilization(runs_ids, runs_data, runs_active)
 
     # compare different runs
     plot_loss_per_stream(

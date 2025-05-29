@@ -21,7 +21,7 @@ from weathergen.train.utils import get_run_id
 
 _REPO_ROOT = Path(__file__).parent.parent.parent.parent  # TODO use importlib for resources
 _DEFAULT_CONFIG_PTH = _REPO_ROOT / "config" / "default_config.yml"
-_DEFAULT_MODEL_PATH = "./models"
+_DEFAULT_MODEL_PATH = "/iopsstor/scratch/cscs/ktezcan/weathergen/models"
 
 _logger = logging.getLogger(__name__)
 
