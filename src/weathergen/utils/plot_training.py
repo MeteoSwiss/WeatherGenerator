@@ -313,7 +313,7 @@ if __name__ == "__main__":
         clean_out_folder()
 
     runs_ids = {
-        "bqcywx9m": [3429899999989, "ERA5 test"],
+        "m4har28d": [3429899999989, "ERA5"],
     }
     
     runs_data = [TrainLogger.read(f"/iopsstor/scratch/cscs/ktezcan/weathergen/models/{run_id}/model_{run_id}_latest.json") for run_id in runs_ids]
