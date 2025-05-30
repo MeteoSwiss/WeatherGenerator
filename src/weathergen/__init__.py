@@ -87,7 +87,7 @@ def train_continue() -> None:
             lr_policy_warmup="cosine",
             lr_policy_decay="linear",
             lr_policy_cooldown="linear",
-            num_epochs=128,  # len(cf.forecast_steps) + 4
+            num_epochs=50,  # len(cf.forecast_steps) + 4
             istep=0,
         )
     else:
