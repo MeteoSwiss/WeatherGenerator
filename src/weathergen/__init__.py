@@ -33,7 +33,6 @@ def evaluate_from_args(argl: list[str]):
     parser = cli.get_evaluate_parser()
     args = parser.parse_args(argl)
 
-    # TODO: move somewhere else
     init_loggers()
 
     evaluate_overwrite = dict(
@@ -54,17 +53,20 @@ def evaluate_from_args(argl: list[str]):
         evaluate_overwrite,
         cli_overwrite,
     )
+    cf = config.set_run_id(cf, args.run_id, args.reuse_run_id)
 
     cf.run_history += [(args.from_run_id, cf.istep)]
 
     trainer = Trainer()
-    trainer.evaluate(cf, args.from_run_id, args.epoch, run_id_new=args.run_id)
+    trainer.evaluate(cf, args.from_run_id, args.epoch)
 
 
 ####################################################################################################
 def train_continue() -> None:
     parser = cli.get_continue_parser()
     args = parser.parse_args()
+
+    init_loggers()
 
     if args.finetune_forecast:
         finetune_overwrite = dict(
@@ -102,6 +104,7 @@ def train_continue() -> None:
         *args.config,
         cli_overwrite,
     )
+    cf = config.set_run_id(cf, args.run_id, args.reuse_run_id)
 
     # track history of run to ensure traceability of results
     cf.run_history += [(args.from_run_id, cf.istep)]
@@ -113,7 +116,7 @@ def train_continue() -> None:
 
             torch._dynamo.config.optimize_ddp = False
     trainer = Trainer()
-    trainer.run(cf, args.from_run_id, args.epoch, run_id_new=args.run_id)
+    trainer.run(cf, args.from_run_id, args.epoch)
 
 
 ####################################################################################################
@@ -137,11 +140,11 @@ def train_with_args(argl: list[str], stream_dir: str | None):
     parser = cli.get_train_parser()
     args = parser.parse_args(argl)
 
-    # TODO: move somewhere else
     init_loggers()
 
     cli_overwrite = config.from_cli_arglist(args.options)
     cf = config.load_config(args.private_config, None, None, *args.config, cli_overwrite)
+    cf = config.set_run_id(cf, args.run_id, False)
 
     if cf.with_flash_attention:
         assert cf.with_mixed_precision
@@ -150,7 +153,7 @@ def train_with_args(argl: list[str], stream_dir: str | None):
     trainer = Trainer(checkpoint_freq=250, print_freq=10)
 
     try:
-        trainer.run(cf, run_id_new=args.run_id)
+        trainer.run(cf)
     except Exception:
         extype, value, tb = sys.exc_info()
         traceback.print_exc()

@@ -75,6 +75,7 @@ class Trainer_Base:
             _logger.info(
                 "DDP not initialized. MASTER_ADDR not set. Running in single process mode."
             )
+            _logger.info(f"rank: {rank} has run_id: {cf.run_id}")
             return
         
         master_port = os.environ.get("MASTER_PORT", "29514")
