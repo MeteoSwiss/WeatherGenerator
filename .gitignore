@@ -12,6 +12,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+*.DS_Store
+
 # C extensions
 *.so
 
@@ -202,5 +204,10 @@ output/
 logs/
 models/
 results/
+models
+results
+playground/
+plots/
+.config/
 
 
