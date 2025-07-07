@@ -93,7 +93,7 @@ def train_continue() -> None:
             lr_policy_warmup="cosine",
             lr_policy_decay="linear",
             lr_policy_cooldown="linear",
-            num_epochs=12,  # len(cf.forecast_steps) + 4
+            num_epochs=36,  # len(cf.forecast_steps) + 4
             istep=0,
         )
     else:
@@ -165,5 +165,5 @@ def train_with_args(argl: list[str], stream_dir: str | None):
 
 
 if __name__ == "__main__":
-    train()
-    # train_continue()
+    # train()
+    train_continue()
