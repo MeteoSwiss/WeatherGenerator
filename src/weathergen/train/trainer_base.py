@@ -19,6 +19,7 @@ import torch.distributed as dist
 import torch.multiprocessing
 
 from weathergen.train.utils import str_to_tensor, tensor_to_str
+from weathergen.utils.config import Config
 from weathergen.utils.distributed import is_root
 
 _logger = logging.getLogger(__name__)
@@ -26,20 +27,24 @@ _logger = logging.getLogger(__name__)
 
 class Trainer_Base:
     def __init__(self):
-        pass
+        self.device_handles = []
+        self.device_names = []
+        self.cf: Config | None = None
 
-    ###########################################
     @staticmethod
     def init_torch(use_cuda=True, num_accs_per_task=1, multiprocessing_method="fork"):
         """
         Initialize torch, set device and multiprocessing method.
 
-        NOTE: If using the Nvidia profiler, the multiprocessing method must be set to "spawn".
-        The default for linux systems is "fork", which prevents traces from being generated with DDP.
+        NOTE: If using the Nvidia profiler,
+        the multiprocessing method must be set to "spawn".
+        The default for linux systems is "fork",
+        which prevents traces from being generated with DDP.
         """
         torch.set_printoptions(linewidth=120)
 
-        # This strategy is required by the nvidia profiles to properly trace events in worker processes.
+        # This strategy is required by the nvidia profiles
+        # to properly trace events in worker processes.
         # This may cause issues with logging. Alternative: "fork"
         torch.multiprocessing.set_start_method(multiprocessing_method, force=True)
 
@@ -61,7 +66,6 @@ class Trainer_Base:
 
         return devices
 
-    ###########################################
     @staticmethod
     def init_ddp(cf):
         rank = 0
@@ -83,7 +87,8 @@ class Trainer_Base:
         rank = int(os.environ.get("SLURM_NODEID")) * ranks_per_node + local_rank
         num_ranks = int(os.environ.get("SLURM_NTASKS"))
         _logger.info(
-            f"DDP initialization: local_rank={local_rank}, ranks_per_node={ranks_per_node}, rank={rank}, num_ranks={num_ranks}"
+            f"DDP initialization: local_rank={local_rank}, ranks_per_node={ranks_per_node}, "
+            f"rank={rank}, num_ranks={num_ranks}"
         )
 
         if rank == 0:
@@ -94,7 +99,10 @@ class Trainer_Base:
                 except OSError as e:
                     if e.errno == errno.EADDRINUSE:
                         _logger.error(
-                            f"Port 1345 is already in use on {master_node}. Please check your network configuration."
+                            (
+                                f"Port 1345 is already in use on {master_node}.",
+                                " Please check your network configuration.",
+                            )
                         )
                         raise
                     else:
@@ -156,7 +164,6 @@ class Trainer_Base:
             self.device_names += [pynvml.nvmlDeviceGetName(handle)]
             self.device_handles += [handle]
 
-    ###########################################
     def get_perf(self):
         perf_gpu, perf_mem = 0.0, 0.0
         if len(self.device_handles) > 0:
@@ -169,8 +176,8 @@ class Trainer_Base:
 
         return perf_gpu, perf_mem
 
-    ###########################################
     def ddp_average(self, val):
+        assert self.cf is not None, "init() must be called before calling ddp_average."
         if self.cf.with_ddp:
             dist.all_reduce(val.cuda(), op=torch.distributed.ReduceOp.AVG)
         return val.cpu()
