@@ -119,6 +119,13 @@ def train_continue() -> None:
             import torch
 
             torch._dynamo.config.optimize_ddp = False
+            
+    # set some values for debugging:
+    cf.attention_dtype="bf16"
+    cf.mlp_norm_eps=1e-5
+    cf.norm_eps=1e-4
+    cf.embed_dropout_rate=0.1
+            
     trainer = Trainer()
     trainer.run(cf, args.from_run_id, args.epoch)
 

@@ -293,9 +293,19 @@ class Trainer(Trainer_Base):
         if self.num_ranks_original is None:
             epoch_base = int(self.cf.istep / len(self.data_loader))
         else:
+            print(f"len(self.dataset): {len(self.dataset)}")
+            print(f"self.num_ranks_original: {self.num_ranks_original}")
+            print(f"cf.batch_size: {cf.batch_size}")
+            print(f"self.cf.istep: {self.cf.istep}")
+            
             len_per_rank = (
                 len(self.dataset) // (self.num_ranks_original * cf.batch_size)
             ) * cf.batch_size
+            
+            print(f"len_per_rank: {len_per_rank}")
+            print(f"cf.samples_per_epoch: {cf.samples_per_epoch}")
+            print(f"self.num_ranks_original: {self.num_ranks_original}")
+            
             epoch_base = int(
                 self.cf.istep / (min(len_per_rank, cf.samples_per_epoch) * self.num_ranks_original)
             )
