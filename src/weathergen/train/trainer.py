@@ -128,7 +128,7 @@ class Trainer(Trainer_Base):
         _logger.info(f"Starting inference with id={self.cf.run_id}.")
 
         # evaluate validation set
-        self.validate(epoch=epoch)
+        self.validate(epoch=0) #epoch)
         _logger.info(f"Finished evaluation run with id: {cf.run_id}")
 
     ###########################################
