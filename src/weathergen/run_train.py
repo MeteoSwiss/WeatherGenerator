@@ -165,5 +165,5 @@ def train_with_args(argl: list[str], stream_dir: str | None):
 
 
 if __name__ == "__main__":
-    train()
-    # train_continue()
+    # train()
+    train_continue()
