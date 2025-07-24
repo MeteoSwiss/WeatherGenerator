@@ -670,11 +670,7 @@ def plot_train(args=None):
     if args.delete == "True":
         clean_plot_folder(out_dir)
 
-    runs_ids = {
-        "m4har28d": [3429899999989, "ERA5"],
-    }
-    
-    runs_data = [TrainLogger.read(f"/iopsstor/scratch/cscs/ktezcan/weathergen/models/{run_id}/model_{run_id}_latest.json") for run_id in runs_ids]
+    runs_data = [TrainLogger.read(run_id, model_path=model_base_dir) for run_id in runs_ids]
 
     # determine which runs are still alive (as a process, though they might hang internally)
     ret = subprocess.run(["squeue"], capture_output=True)
@@ -688,8 +684,8 @@ def plot_train(args=None):
     # plot learning rate
     plot_lr(runs_ids, runs_data, runs_active, plot_dir=out_dir)
 
-    # plot performance
-    # plot_utilization(runs_ids, runs_data, runs_active)
+    # # plot performance
+    # plot_utilization(runs_ids, runs_data, runs_active, plot_dir=out_dir)
 
     # compare different runs
     plot_loss_per_stream(
@@ -697,8 +693,8 @@ def plot_train(args=None):
         runs_ids,
         runs_data,
         runs_active,
-        ["era5"], # , "METEOSAT", "NPP"],
-        x_type=x_type,
+        streams,
+        x_type=args.x_type,
         x_scale_log=x_scale_log,
         plot_dir=out_dir,
     )
@@ -707,8 +703,8 @@ def plot_train(args=None):
         runs_ids,
         runs_data,
         runs_active,
-        ["era5"], #, "METEOSAT", "NPP"],
-        x_type=x_type,
+        streams,
+        x_type=args.x_type,
         x_scale_log=x_scale_log,
         plot_dir=out_dir,
     )
@@ -717,8 +713,8 @@ def plot_train(args=None):
         runs_ids,
         runs_data,
         runs_active,
-        ["ERA5"], #, "METEOSAT", "NPP"],
-        x_type=x_type,
+        streams,
+        x_type=args.x_type,
         x_scale_log=x_scale_log,
         plot_dir=out_dir,
     )
@@ -726,17 +722,21 @@ def plot_train(args=None):
     # plot all cols for all run_ids
     for run_id, run_data in zip(runs_ids, runs_data, strict=False):
         plot_loss_per_run(
-            ["train", "val"], run_id, runs_ids[run_id], run_data, get_stream_names(f"/iopsstor/scratch/cscs/ktezcan/weathergen/models/{run_id}/model_{run_id}_latest.json")
+            ["train", "val"],
+            run_id,
+            runs_ids[run_id],
+            run_data,
+            get_stream_names(run_id, model_path=model_base_dir),  # limit to available streams
+            plot_dir=out_dir,
         )
-    plot_loss_per_run(["val"], run_id, runs_ids[run_id], run_data, get_stream_names(f"/iopsstor/scratch/cscs/ktezcan/weathergen/models/{run_id}/model_{run_id}_latest.json"))
-    # plot_loss_per_run(
-    #     ["val"],
-    #     run_id,
-    #     runs_ids[run_id],
-    #     run_data,
-    #     get_stream_names(run_id, model_path=model_base_dir),  # limit to available streams
-    #     plot_dir=out_dir,
-    # )
+    plot_loss_per_run(
+        ["val"],
+        run_id,
+        runs_ids[run_id],
+        run_data,
+        get_stream_names(run_id, model_path=model_base_dir),  # limit to available streams
+        plot_dir=out_dir,
+    )
 
 
 if __name__ == "__main__":
