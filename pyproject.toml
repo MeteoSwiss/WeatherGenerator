@@ -29,6 +29,7 @@ dependencies = [
  "hatchling",
  "weathergen-common",
  "weathergen-evaluate",
+ "seaborn>=0.13.2",
  "numexpr>=2.11.0",
 ]
 
