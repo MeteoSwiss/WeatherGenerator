@@ -382,7 +382,13 @@ class GradientNormsAnalyzer:
         fig, axes = plt.subplots(2, 2, figsize=figsize)
 
         # Plot 1: Histogram of all gradient norms
-        axes[0, 0].hist(np.log10(self.df["grad_norm"].values), bins=50, alpha=0.7)
+        vals = self.df["grad_norm"].values
+        # print percentage of zero values
+        zero_count = (vals == 0).sum()
+        total_count = len(self.df)
+        vals = vals[vals > 0]  # Exclude zero values for histogram
+        print(f"Percentage of zero gradient norms: {zero_count / total_count * 100:.2f}%")
+        axes[0, 0].hist(np.log10(vals), bins=50, alpha=0.7)
         axes[0, 0].set_xlabel("Log10(Gradient Norm)")
         axes[0, 0].set_ylabel("Frequency")
         axes[0, 0].set_title("Distribution of Gradient Norms (Log Scale)")
