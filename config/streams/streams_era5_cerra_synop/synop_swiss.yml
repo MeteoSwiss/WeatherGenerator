@@ -11,7 +11,7 @@ SynopSwissmetnet :
   type : anemoi
   filenames : ['synop-dwh-sparse-swissmetnet-2015-2020-10m-v1.zarr']
   loss_weight : 1.0
-  source_exclude : []
+  source_exclude : ['dkl010z0', 'fkl010z0', 'prestas0', 'rre150z0', 'tde200s0', 'tre200s0']
   target_exclude : []
   masking_rate : 0.6
   masking_rate_none : 0.05
