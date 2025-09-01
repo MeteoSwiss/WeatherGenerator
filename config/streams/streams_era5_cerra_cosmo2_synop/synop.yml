@@ -7,9 +7,9 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-SynopSwissmetnet :
+SynopPartners :
   type : anemoi
-  filenames : ['synop-dwh-sparse-swissmetnet-2015-2020-10m-v1.zarr']
+  filenames : ['synop-dwh-sparse-icondomain-2015-2020-1h-v1.zarr']
   loss_weight : 1.0
   source_exclude : [] #'dkl010z0', 'fkl010z0', 'prestas0', 'rre150z0', 'tde200s0', 'tre200s0']
   target_exclude : []
