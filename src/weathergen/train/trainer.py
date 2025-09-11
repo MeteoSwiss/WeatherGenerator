@@ -12,6 +12,7 @@
 import re
 import time
 from typing import Any
+from unicodedata import name
 
 import numpy as np
 import torch
@@ -27,6 +28,9 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from torch.distributed.fsdp.wrap import (
     size_based_auto_wrap_policy,  # default_auto_wrap_policy,
 )
+
+import torch.distributed as dist
+
 
 import weathergen.utils.config as config
 from weathergen.datasets.multi_stream_data_sampler import MultiStreamDataSampler
@@ -268,7 +272,7 @@ class Trainer(TrainerBase):
             betas=(beta1, beta2),
             eps=eps,
         )
-        self.grad_scaler = torch.amp.GradScaler("cuda")
+        self.grad_scaler = torch.amp.GradScaler("cuda" , init_scale=1.0, enabled=True)
 
         assert len(self.dataset) > 0, f"No data found in {self.dataset}"
 
@@ -494,6 +498,11 @@ class Trainer(TrainerBase):
             forecast_steps = batch[-1]
             batch = self.batch_to_device(batch)
 
+            # print("source_tokens_cells: >>>>>>>>>>>>, " + str(dist.get_rank()))
+            # print(batch[0][0][0].source_tokens_cells)
+            # print("target_tokens: >>>>>>>>>>>>, " + str(dist.get_rank()))
+            # print(batch[0][0][0].target_tokens)
+            
             # evaluate model
             with torch.autocast(
                 device_type="cuda",
@@ -503,6 +512,7 @@ class Trainer(TrainerBase):
                 preds, posteriors = self.ddp_model(
                     self.model_params, batch, cf.forecast_offset, forecast_steps
                 )
+                # print(preds)
                 loss_values = self.loss_calculator.compute_loss(
                     preds=preds,
                     streams_data=batch[0],
@@ -513,15 +523,46 @@ class Trainer(TrainerBase):
 
             # backward pass
             self.grad_scaler.scale(loss_values.loss).backward()
+            # loss_values.loss.backward()
+            # loss_values.loss.backward()
+            # for name, p in self.model.named_parameters():
+            #     print("no scaler: dir after backw ", dist.get_rank(), name, p.requires_grad, p.grad is None)
+            #     if p.requires_grad and  p.grad is None:
+            #         print("p.grad")
+            #         print(p.grad)
+            #         manual_grad = torch.autograd.grad(loss_values.loss, p, retain_graph=True)[0]
+            #         print("manual_grad")
+            #         print(manual_grad)
 
             # gradient clipping
             self.grad_scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.ddp_model.parameters(), max_norm=cf.grad_clip)
 
+            # print("looking for infs: ================")
+            # state = self.grad_scaler._per_optimizer_states[id(self.optimizer)]
+            # print("Found inf per device:", state["found_inf_per_device"])
+            # # print("Stage:", state["_stage"])
+
+            print("checking gradients: >>>>>>>>>>>>, " + str(dist.get_rank()))
+            for name, p in self.model.named_parameters():
+                if p.requires_grad:
+                    if p.grad is None:
+                        print(name, dist.get_rank(), "→ no grad")
+                    else:
+                        print(name, dist.get_rank(), " else: has grad")
+                        # check for inf/nan directly
+                        if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+                            print(name, dist.get_rank(), "→ has NaN/Inf")
+                        else:
+                            print(name, dist.get_rank(), "→ grad ok, mean:", p.grad.mean().item())
+            print("checking gradients: done <<<<<<<<<<<, " + str(dist.get_rank()))
+            # for name, p in self.model.named_parameters():
+            #     print("no scaler: after unscaling ", dist.get_rank(), name, p.requires_grad, p.grad is None)
             # optimizer step
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
-            self.optimizer.zero_grad()
+            # self.optimizer.step()
+            # self.optimizer.zero_grad()
 
             # update learning rate
             self.lr_scheduler.step()

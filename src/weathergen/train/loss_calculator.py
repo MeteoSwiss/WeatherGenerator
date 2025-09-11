@@ -15,6 +15,8 @@ import torch
 from omegaconf import DictConfig
 from torch import Tensor
 
+import torch.distributed as dist
+
 import weathergen.train.loss as losses
 from weathergen.train.loss import stat_loss_fcts
 from weathergen.utils.train_logger import TRAIN, VAL, Stage
@@ -260,6 +262,15 @@ class LossCalculator:
                 ctr_loss_fcts = 0
                 for i_lfct, (loss_fct, loss_fct_weight) in enumerate(self.loss_fcts):
                     # loss for current loss function
+                    # print("pred: ================")
+                    # print(pred)
+                    # print("pred nan: ================")
+                    # print(torch.isnan(pred).any())
+                    # print("target: ================")
+                    # print(target)
+                    # print("target nan: ================")
+                    # print(torch.isnan(target).any())
+
                     loss_lfct, loss_lfct_chs = LossCalculator._loss_per_loss_function(
                         loss_fct,
                         stream_info,
@@ -270,6 +281,11 @@ class LossCalculator:
                         weights_locations,
                     )
                     losses_all[stream_info.name][:, i_lfct] += loss_lfct_chs
+
+                    # print("loss: ================, rank " + str(dist.get_rank()))
+                    # print(loss_lfct)
+                    # print("loss nan: ================, rank " + str(dist.get_rank()))
+                    # print(torch.isnan(loss_lfct).any())
 
                     # Add the weighted and normalized loss from this loss function to the total
                     # batch loss
