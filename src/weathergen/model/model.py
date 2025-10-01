@@ -520,7 +520,10 @@ class Model(torch.nn.Module):
         
         if self.cf.get("normalize_latent", False):
             tokens = torch.nn.functional.normalize(tokens, dim=2)
-
+        if self.cf.get("dropout_latent", False):
+            tokens = torch.nn.functional.dropout(tokens, p=0.4, training=self.training)
+            
+            
         # roll-out in latent space
         preds_all = []
         tokens_all = [tokens]
@@ -539,6 +542,9 @@ class Model(torch.nn.Module):
             tokens = self.forecast(model_params, tokens)
             if self.cf.get("normalize_latent", False):
                 tokens = torch.nn.functional.normalize(tokens, dim=2)
+            if self.cf.get("dropout_latent", False):
+                tokens = torch.nn.functional.dropout(tokens, p=0.4, training=self.training)
+                
             tokens_all += [tokens]
 
         # prediction for final step
