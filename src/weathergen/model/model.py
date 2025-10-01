@@ -517,6 +517,9 @@ class Model(torch.nn.Module):
         tokens, posteriors = self.assimilate_local(model_params, tokens, source_cell_lens)
 
         tokens = self.assimilate_global(model_params, tokens)
+        
+        if self.cf.get("normalize_latent", False):
+            tokens = torch.nn.functional.normalize(tokens, dim=2)
 
         # roll-out in latent space
         preds_all = []
@@ -534,6 +537,8 @@ class Model(torch.nn.Module):
             ]
 
             tokens = self.forecast(model_params, tokens)
+            if self.cf.get("normalize_latent", False):
+                tokens = torch.nn.functional.normalize(tokens, dim=2)
             tokens_all += [tokens]
 
         # prediction for final step
