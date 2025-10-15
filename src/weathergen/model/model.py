@@ -32,6 +32,7 @@ from weathergen.model.engines import (
     LocalAssimilationEngine,
     TargetPredictionEngine,
     TargetPredictionEngineClassic,
+    SimpleMLPPredictionEngine
 )
 from weathergen.model.layers import MLP, NamedLinear
 from weathergen.model.parametrised_prob_dist import LatentInterpolator
@@ -417,7 +418,8 @@ class Model(torch.nn.Module):
             tte_version = (
                 TargetPredictionEngine
                 if cf.decoder_type != "PerceiverIOCoordConditioning"
-                else TargetPredictionEngineClassic
+                else SimpleMLPPredictionEngine
+                # else TargetPredictionEngineClassic
             )
             tte = tte_version(
                 cf,

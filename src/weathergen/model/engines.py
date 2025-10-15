@@ -505,6 +505,100 @@ class TargetPredictionEngineClassic(nn.Module):
         return tc_tokens
 
 
+class SimpleMLPPredictionEngine(nn.Module):
+    def __init__(
+        self,
+        cf,
+        dims_embed,
+        dim_coord_in,
+        tr_dim_head_proj,
+        tr_mlp_hidden_factor,
+        softcap,
+        tro_type,
+        stream_name: str,
+    ):
+        """
+        Just an MLP fror bebugging
+        
+
+        :param cf: Configuration object containing parameters for the engine.
+        :param dims_embed: List of embedding dimensions for each layer.
+        :param dim_coord_in: Input dimension for coordinates.
+        :param tr_dim_head_proj: Dimension for head projection.
+        :param tr_mlp_hidden_factor: Hidden factor for the MLP layers.
+        :param softcap: Softcap value for the attention layers.
+        :param tro_type: Type of target readout (e.g., "obs_value").
+        """
+        super(SimpleMLPPredictionEngine, self).__init__()
+        self.name = f"SimpleMLPPredictionEngine_{stream_name}"
+
+        self.cf = cf
+        self.dims_embed = dims_embed
+        self.dim_coord_in = dim_coord_in
+        self.tr_dim_head_proj = tr_dim_head_proj
+        self.tr_mlp_hidden_factor = tr_mlp_hidden_factor
+        self.softcap = softcap
+        self.tro_type = tro_type
+        self.tte = torch.nn.ModuleList()
+        
+        # class MLP(torch.nn.Module):
+        # def __init__(
+        #     self,
+        #     dim_in,
+        #     dim_out,
+        #     num_layers=2,
+        #     hidden_factor=2,
+        #     pre_layer_norm=True,
+        #     dropout_rate=0.0,
+        #     nonlin=torch.nn.GELU,
+        #     with_residual=False,
+        #     norm_type="LayerNorm",
+        #     dim_aux=None,
+        #     norm_eps=1e-5,
+        #     name: str | None = None,
+        # ):
+
+        self.tte.append(
+            MLP(
+                2048,
+                256,
+                num_layers=2,
+                hidden_factor=1,
+            )
+        )
+        
+        self.tte.append(
+            MLP(
+                110592,
+                40320,
+                num_layers=2,
+                hidden_factor=0.5,
+            )
+        )
+        
+        self.tte.append(
+            MLP(
+                256,
+                256,
+                num_layers=2,
+                hidden_factor=1,
+            )
+        )
+
+            
+
+    def forward(self, latent, output, latent_lens, output_lens, coordinates):
+        tc_tokens = output
+        tokens_stream = latent
+
+        # total of 6 layers
+        tokens_stream = checkpoint(self.tte[0], tokens_stream) # go from 110592x2048 to 110592x256
+        tokens_stream = checkpoint(self.tte[1], torch.permute(tokens_stream, [1,0])) # 1. permute to 256x110592, 2. go to 256x4320
+        tokens_stream = torch.permute(tokens_stream, [1,0]) + tc_tokens # back to 4320x256 and add the target tokens
+        tokens_stream = checkpoint(self.tte[2], tokens_stream) # final MLP to refine the output tokens
+        
+        return tokens_stream
+
 class TargetPredictionEngine(nn.Module):
     def __init__(
         self,

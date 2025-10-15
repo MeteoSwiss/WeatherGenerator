@@ -97,7 +97,7 @@ class CrossAttentionBlock(nn.Module):
         with_adanorm,
         with_mlp,
         num_heads,
-        dropout_rate,
+        dropout_rate=0.1,
         **kwargs,
     ):
         super().__init__()
