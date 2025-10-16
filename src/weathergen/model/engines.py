@@ -564,6 +564,10 @@ class SimpleMLPPredictionEngine(nn.Module):
                 256,
                 num_layers=2,
                 hidden_factor=1,
+                pre_layer_norm=True,
+                dropout_rate=0.1,  # Assuming dropout_rate is 0.1
+                norm_type=self.cf.norm_type,
+                norm_eps=self.cf.mlp_norm_eps,
             )
         )
         
@@ -572,7 +576,11 @@ class SimpleMLPPredictionEngine(nn.Module):
                 110592,
                 40320,
                 num_layers=2,
-                hidden_factor=0.5,
+                hidden_factor=0.1,
+                pre_layer_norm=True,
+                dropout_rate=0.1,  # Assuming dropout_rate is 0.1
+                norm_type=self.cf.norm_type,
+                norm_eps=self.cf.mlp_norm_eps,
             )
         )
         
@@ -582,6 +590,10 @@ class SimpleMLPPredictionEngine(nn.Module):
                 256,
                 num_layers=2,
                 hidden_factor=1,
+                pre_layer_norm=True,
+                dropout_rate=0.1,  # Assuming dropout_rate is 0.1
+                norm_type=self.cf.norm_type,
+                norm_eps=self.cf.mlp_norm_eps,
             )
         )
 
@@ -592,10 +604,10 @@ class SimpleMLPPredictionEngine(nn.Module):
         tokens_stream = latent
 
         # total of 6 layers
-        tokens_stream = checkpoint(self.tte[0], tokens_stream) # go from 110592x2048 to 110592x256
-        tokens_stream = checkpoint(self.tte[1], torch.permute(tokens_stream, [1,0])) # 1. permute to 256x110592, 2. go to 256x4320
+        tokens_stream = checkpoint(self.tte[0], tokens_stream, use_reentrant=False) # go from 110592x2048 to 110592x256
+        tokens_stream = checkpoint(self.tte[1], torch.permute(tokens_stream, [1,0]), use_reentrant=False) # 1. permute to 256x110592, 2. go to 256x4320
         tokens_stream = torch.permute(tokens_stream, [1,0]) + tc_tokens # back to 4320x256 and add the target tokens
-        tokens_stream = checkpoint(self.tte[2], tokens_stream) # final MLP to refine the output tokens
+        tokens_stream = checkpoint(self.tte[2], tokens_stream, use_reentrant=False) # final MLP to refine the output tokens
         
         return tokens_stream
 

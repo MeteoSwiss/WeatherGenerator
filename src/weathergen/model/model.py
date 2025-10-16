@@ -897,9 +897,9 @@ class Model(torch.nn.Module):
             tcs_aux = torch.cat(
                 [streams_data[i_b][ii].target_coords[fstep] for i_b in range(len(streams_data))]
             )
-
+            
             tc_tokens = tte(
-                latent=tokens_stream,
+                latent=tokens_stream.type(torch.bfloat16),
                 output=tc_tokens,
                 latent_lens=model_params.tokens_lens,
                 output_lens=tcs_lens,
