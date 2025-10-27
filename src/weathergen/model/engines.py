@@ -24,7 +24,7 @@ from weathergen.model.embeddings import (
     StreamEmbedLinear,
     StreamEmbedTransformer,
 )
-from weathergen.model.layers import MLP
+from weathergen.model.layers import MLP, FEMLP
 from weathergen.model.utils import ActivationFactory
 from weathergen.utils.utils import get_dtype
 
@@ -277,6 +277,59 @@ class ForecastingEngine:
         self.num_healpix_cells = num_healpix_cells
         self.fe_blocks = torch.nn.ModuleList()
 
+    # def create(self) -> torch.nn.ModuleList:
+    #     """
+    #     Creates and returns the module list (fe_blocks).
+
+    #     :return: torch.nn.ModuleList containing the forecasting blocks.
+    #     """
+    #     global_rate = int(1 / self.cf.forecast_att_dense_rate)
+    #     if self.cf.forecast_policy is not None:
+    #         for i in range(self.cf.fe_num_blocks):
+    #             # Alternate between global and local attention
+    #             if (i % global_rate == 0) or i + 1 == self.cf.ae_global_num_blocks:
+    #                 self.fe_blocks.append(
+    #                     MultiSelfAttentionHead(
+    #                         self.cf.ae_global_dim_embed,
+    #                         num_heads=self.cf.fe_num_heads,
+    #                         dropout_rate=self.cf.fe_dropout_rate,
+    #                         with_qk_lnorm=self.cf.fe_with_qk_lnorm,
+    #                         with_flash=self.cf.with_flash_attention,
+    #                         norm_type=self.cf.norm_type,
+    #                         dim_aux=1,
+    #                         norm_eps=self.cf.norm_eps,
+    #                         attention_dtype=get_dtype(self.cf.attention_dtype),
+    #                     )
+    #                 )
+    #             else:
+    #                 self.fe_blocks.append(
+    #                     MultiSelfAttentionHeadLocal(
+    #                         self.cf.ae_global_dim_embed,
+    #                         num_heads=self.cf.fe_num_heads,
+    #                         qkv_len=self.num_healpix_cells * self.cf.ae_local_num_queries,
+    #                         block_factor=self.cf.ae_global_block_factor,
+    #                         dropout_rate=self.cf.fe_dropout_rate,
+    #                         with_qk_lnorm=self.cf.fe_with_qk_lnorm,
+    #                         with_flash=self.cf.with_flash_attention,
+    #                         norm_type=self.cf.norm_type,
+    #                         dim_aux=1,
+    #                         norm_eps=self.cf.norm_eps,
+    #                         attention_dtype=get_dtype(self.cf.attention_dtype),
+    #                     )
+    #                 )
+    #             # Add MLP block
+    #             self.fe_blocks.append(
+    #                 MLP(
+    #                     self.cf.ae_global_dim_embed,
+    #                     self.cf.ae_global_dim_embed,
+    #                     with_residual=True,
+    #                     dropout_rate=self.cf.fe_dropout_rate,
+    #                     norm_type=self.cf.norm_type,
+    #                     dim_aux=1,
+    #                     norm_eps=self.cf.mlp_norm_eps,
+    #                 )
+    #             )
+                
     def create(self) -> torch.nn.ModuleList:
         """
         Creates and returns the module list (fe_blocks).
@@ -317,18 +370,31 @@ class ForecastingEngine:
                             attention_dtype=get_dtype(self.cf.attention_dtype),
                         )
                     )
-                # Add MLP block
-                self.fe_blocks.append(
-                    MLP(
-                        self.cf.ae_global_dim_embed,
-                        self.cf.ae_global_dim_embed,
-                        with_residual=True,
-                        dropout_rate=self.cf.fe_dropout_rate,
-                        norm_type=self.cf.norm_type,
-                        dim_aux=1,
-                        norm_eps=self.cf.mlp_norm_eps,
+
+                if i + 1 == self.cf.ae_global_num_blocks:
+                    self.fe_blocks.append(
+                        FEMLP(
+                            self.cf.ae_global_dim_embed,
+                            self.cf.ae_global_dim_embed,
+                            with_residual=True,
+                            dropout_rate=self.cf.fe_dropout_rate,
+                            norm_type=self.cf.norm_type,
+                            dim_aux=1,
+                            norm_eps=self.cf.mlp_norm_eps,
+                        )
                     )
-                )
+                else:
+                    self.fe_blocks.append(
+                        MLP(
+                            self.cf.ae_global_dim_embed,
+                            self.cf.ae_global_dim_embed,
+                            with_residual=True,
+                            dropout_rate=self.cf.fe_dropout_rate,
+                            norm_type=self.cf.norm_type,
+                            dim_aux=1,
+                            norm_eps=self.cf.mlp_norm_eps,
+                        )
+                    )
 
         def init_weights_final(m):
             if isinstance(m, torch.nn.Linear):
