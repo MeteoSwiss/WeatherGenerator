@@ -371,7 +371,8 @@ class ForecastingEngine:
                         )
                     )
 
-                if i + 1 == self.cf.ae_global_num_blocks:
+                layer_ctr = self.cf.fe_num_blocks if self.cf.ln_last_layer else self.cf.ae_global_num_blocks
+                if i + 1 == layer_ctr:
                     self.fe_blocks.append(
                         FEMLP(
                             self.cf.ae_global_dim_embed,
