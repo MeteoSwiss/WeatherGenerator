@@ -44,8 +44,8 @@ pred_mlp_adaln: True
 # number of steps offset applied to first target window; if set to zero and forecast_steps=0 then
 # one is training an auto-encoder
 forecast_offset : 1
-forecast_delta_hrs: 0
-forecast_steps: 2
+forecast_delta_hrs: 1
+forecast_steps: 6
 forecast_policy: "fixed"
 forecast_freeze_model: False
 forecast_att_dense_rate: 1.0
@@ -144,7 +144,7 @@ start_date: 197901010000
 end_date: 202212310000
 start_date_val: 202310010000
 end_date_val: 202312310000
-len_hrs: 6
+len_hrs: 1
 step_hrs: 6
 input_window_steps: 1
 
@@ -185,6 +185,13 @@ wgtags:
   # This is expected to be the primary tag for comparing experiments in MLFlow.
   # Expected values are lowercase strings with no spaces, just underscores:
   # Examples: "rollout_ablation_grid"  
-  exp: "rollout_params"
+  exp: "hourly_era5"
   # *** Experiment-specific tags ***
   grid_search: "dropout"
+
+
+
+
+
+
+anemoi-datasets copy s3://ml-datasets/aifs-ea-an-oper-0001-mars-o96-1979-2023-1h-v1-with-ERA51.zarr .
