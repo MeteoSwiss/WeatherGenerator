@@ -188,10 +188,3 @@ wgtags:
   exp: "hourly_era5"
   # *** Experiment-specific tags ***
   grid_search: "dropout"
-
-
-
-
-
-
-anemoi-datasets copy s3://ml-datasets/aifs-ea-an-oper-0001-mars-o96-1979-2023-1h-v1-with-ERA51.zarr .
