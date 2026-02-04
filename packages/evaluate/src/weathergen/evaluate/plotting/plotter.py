@@ -16,8 +16,8 @@ import xarray as xr
 from matplotlib.lines import Line2D
 from PIL import Image
 from scipy.stats import wilcoxon
-
 from weathergen.common.config import _load_private_conf
+
 from weathergen.evaluate.plotting.plot_utils import (
     DefaultMarkerSize,
 )
@@ -602,6 +602,7 @@ class Plotter:
                         image_paths += names
 
                     if image_paths:
+                        image_paths = sorted(image_paths)
                         images = [Image.open(path) for path in image_paths]
                         images[0].save(
                             f"{map_output_dir}/animation_{self.run_id}_{tag}_{sa}_{self.stream}_{region}_{var}.gif",
