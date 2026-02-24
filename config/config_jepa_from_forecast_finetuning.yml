@@ -6,6 +6,12 @@ freeze_modules: ".*encoder.*|.*latent_pre_norm.*|.*latent_heads.*"
 streams_directory: "/users/ktezcan/projects/Meteoswiss/WeatherGenerator/config/streams/era5_ft_nppatms"
 streams: ???
 
+train_logging:
+  terminal: 10
+  metrics: 20
+  checkpoint: 250
+  log_grad_norms: False
+
 general:
 
   # mutable parameters

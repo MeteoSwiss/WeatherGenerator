@@ -129,6 +129,18 @@ data_loading :
   rng_seed: ???
   repeat_data_in_mini_epoch : False
 
+train_logging:
+  terminal: 10
+  metrics: 20
+  checkpoint: 250
+  log_grad_norms: False
+
+  # Collapse monitoring for SSL training (JEPA/DINO/iBOT)
+  # Detects representation collapse via various metrics
+  # For forecasting, supports sequences of latents with per-step and aggregate metrics
+  collapse_monitoring:
+    enabled: false
+
 
 # config for training
 training_config:
