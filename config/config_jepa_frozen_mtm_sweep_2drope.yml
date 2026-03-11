@@ -69,7 +69,7 @@ healpix_level: 5
 # Use 2D RoPE instead of traditional global positional encoding
 # When True: uses 2D RoPE based on healpix cell coordinates (lat/lon)
 # When False: uses traditional pe_global positional encoding
-rope_2D: True
+rope_2D: True # False #t True
 
 with_mixed_precision: True
 with_flash_attention: True
@@ -213,7 +213,7 @@ training_config:
         },
         },
         target_and_aux_calc: { "FrozenTeacher" : 
-            {teacher_run_id: "p43hxwic",      # run ID of the pre-trained model
+            {teacher_run_id: "h9phlzin",      # run ID of the pre-trained model
             teacher_mini_epoch: -1            # -1 = latest checkpoint
           },
         }
