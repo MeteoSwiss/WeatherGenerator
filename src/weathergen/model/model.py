@@ -22,7 +22,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from weathergen.common.config import Config
-from weathergen.datasets.batch import ModelBatch
+from weathergen.datasets.batch import BatchSamples, ModelBatch
 from weathergen.datasets.utils import healpix_verts_rots, r3tos2
 from weathergen.model.encoder import EncoderModule
 from weathergen.model.engines import (
@@ -669,7 +669,12 @@ class Model(torch.nn.Module):
             z_pre_norm=tokens,
         )
 
-    def forward(self, model_params: ModelParams, batch: ModelBatch) -> ModelOutput:
+    def forward(
+        self,
+        model_params: ModelParams,
+        batch: ModelBatch | BatchSamples | LatentState,
+        rollout_steps: int,
+    ) -> ModelOutput:
         """Forward pass of the model
 
         Tokens are processed through the model components, which were defined in the create method.
@@ -680,27 +685,35 @@ class Model(torch.nn.Module):
             A list containing all prediction results
         """
 
-        output = ModelOutput(batch.get_output_len())
+        output = ModelOutput(rollout_steps)
 
-        tokens, posteriors = self.encoder(model_params, batch)
-        output.add_latent_prediction(0, "posteriors", posteriors)
+        if isinstance(batch, (ModelBatch, BatchSamples)):
+            tokens, posteriors = self.encoder(model_params, batch)
+            output.add_latent_prediction(0, "posteriors", posteriors)
 
-        # recover batch dimension and separate input_steps
-        shape = (len(batch), batch.get_num_steps(), *tokens.shape[1:])
-        # collapse along input step dimension
-        tokens = tokens.reshape(shape).sum(axis=1)
+            # recover batch dimension and separate input_steps
+            shape = (len(batch), batch.get_num_steps(), *tokens.shape[1:])
+            # collapse along input step dimension
+            tokens = tokens.reshape(shape).sum(axis=1)
+        else:
+            if batch.z_pre_norm is None:
+                raise ValueError("LatentState.z_pre_norm must be provided to run the model.")
+            tokens = batch.z_pre_norm
+            output.add_latent_prediction(0, "posteriors", batch)
 
         # Allow for pushforward trick
         p_fwd = self.cf.training_config.get("forecast", {}).get("pushforward", False)
         # roll-out in latent space, iterate and generate output over requested output steps
-        for step in batch.get_output_idxs():
-            without_grad = p_fwd and self.training and step != max(batch.get_output_idxs())
+        for step in range(rollout_steps):
+            without_grad = p_fwd and self.training and step != rollout_steps - 1
             if without_grad:
-                # Pushforward mode: advance tokens without grad; no decoding with torch.no_grad():
-                tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+                # Pushforward mode: advance tokens without grad; no decoding
+                if self.forecast_engine:
+                    tokens = self.forecast_engine(tokens, step, coords=model_params.rope_coords)
                 continue
-
-            tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+            # apply forecasting engine (if present)
+            if self.forecast_engine:
+                tokens = self.forecast_engine(tokens, step, coords=model_params.rope_coords)
             # decoder predictions
             output = self.predict_decoders(model_params, step, tokens, batch, output)
             # latent predictions (raw and with SSL heads)

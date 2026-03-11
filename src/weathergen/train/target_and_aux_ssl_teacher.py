@@ -50,12 +50,13 @@ class EncoderTeacher(TargetAndAuxModuleBase):
         # TODO: support multiple LossLatentSSLStudentTeacher loss terms
         self.postprocess_targets = get_target_postprocessing(losses_cfg[0], training_cfg, **kwargs)
 
-    def forward_teacher(self, model_params, batch) -> Any:
+    def forward_teacher(self, model_params, batch, rollout_steps: int) -> Any:
         raise NotImplementedError("Subclasses must implement forward_teacher()")
 
     def compute(self, bidx, batch, model_params, model) -> TargetAuxOutput:
         with torch.no_grad():
-            outputs = self.forward_teacher(model_params, batch).get_latent_prediction(0)
+            rollout_steps = batch.get_output_len()
+            outputs = self.forward_teacher(model_params, batch, rollout_steps).get_latent_prediction(0)
             targets = {}
             for loss_name, target_module in self.postprocess_targets.items():
                 targets[loss_name] = target_module(outputs[loss_name])
@@ -91,8 +92,8 @@ class EMATeacher(EncoderTeacher):
         self.batch_size = batch_size
         self.reset()
 
-    def forward_teacher(self, model_params, batch):
-        return self.ema_model.forward_eval(model_params, batch)
+    def forward_teacher(self, model_params, batch, rollout_steps: int):
+        return self.ema_model.forward_eval(model_params, batch, rollout_steps)
 
     def reset(self, batch_size=None):
         self.ema_model.reset()
@@ -157,11 +158,11 @@ class FrozenTeacher(EncoderTeacher):
 
         return cls(teacher_model, cf.training_config, teacher_model_params)
 
-    def forward_teacher(self, model_params, batch):
+    def forward_teacher(self, model_params, batch, rollout_steps: int):
         params = (
             self.teacher_model_params if self.teacher_model_params is not None else model_params
         )
-        return self.teacher_model(params, batch)
+        return self.teacher_model(params, batch, rollout_steps)
 
     def reset(self, batch_size=None):
         pass
