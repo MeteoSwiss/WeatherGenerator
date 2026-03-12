@@ -151,6 +151,8 @@ class TrainLogger:
         # define cols for training
         training_cfg = get_active_stage_config(cf.training_config, {}, cfg_keys_to_filter)
         cols1, cols_train = get_loss_terms_per_stream(cf.streams, training_cfg)
+        # print(run_id) # cols1 = ['LossPhysical.ERA5_1hr.mse.avg'] cols_train = ['ERA5_1hr, mse']
+        # breakpoint()
         cols_train += ["dtime", "samples", "mse", "lr"]
         cols1 += [_weathergen_timestamp, "num_samples", "loss_avg_mean", "learning_rate"]
 
@@ -297,6 +299,7 @@ def clean_df(df, columns: list[str] | None):
             idcs = [i for i in range(len(columns)) if columns[i] == "loss_avg_mean"]
             if len(idcs) > 0:
                 columns[idcs[0]] = "loss_avg_0_mean"
+
         df = df.select(columns)
         # Remove all rows where all columns are null
         df = df.filter(~pl.all_horizontal(pl.col(c).is_null() for c in columns))
