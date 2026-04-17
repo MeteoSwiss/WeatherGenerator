@@ -1,0 +1,114 @@
+# (C) Copyright 2024 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+# Weights used from the Graph Cast paper (see Supplementary Materials: https://www.science.org/doi/suppl/10.1126/science.adi2336/suppl_file/science.adi2336_sm.pdf)
+# Weights are proportial to the pressure at each level 
+# 37 vertical pressure levels (list =)[1,2,3,5,7,10,20,30,50,70,100,125,150,175,200,225,250,300,350,400,450,500,550,600,650,700,750,775,800,825,850,875,900,925,950,975,1000]
+# for q_1000: 1000/15548
+
+ERA5 :
+  type : anemoi
+  filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2023-6h-v8.zarr']
+  stream_id : 0
+  source_exclude : ['w_', 'skt', 'tcw', 'cp', 'tp']
+  target_exclude : ['w_', 'slor', 'sdor', 'tcw', 'cp', 'tp']
+  loss_weight : 1.
+  location_weight : cosine_latitude
+  masking_rate : 0.6
+  masking_rate_none : 0.05
+  token_size : 8
+  tokenize_spacetime : True
+  max_num_targets: 20000
+  embed : 
+    net : transformer
+    num_tokens : 1
+    num_heads : 8
+    dim_embed : 256
+    num_blocks : 2
+  embed_target_coords :
+    net : linear
+    dim_embed : 256
+  target_readout :
+    num_layers : 2
+    num_heads : 4
+    # sampling_rate : 0.2
+  pred_head :
+    ens_size : 1
+    num_layers : 1
+  channel_weights :
+    2t: 1.0
+    10u: 0.1
+    10v: 0.1
+    msl: 0.1
+    #tp: 0.1
+    q_50: 0.0032
+    q_100: 0.0064
+    q_150: 0.0096
+    q_200: 0.0129
+    q_250: 0.0161
+    q_300: 0.0193
+    q_400: 0.0257
+    q_500: 0.0322
+    q_600: 0.0386
+    q_700: 0.0450
+    q_850: 0.0547
+    q_925: 0.0595
+    q_1000: 0.0643
+    t_50: 0.0032
+    t_100: 0.0064
+    t_150: 0.0096
+    t_200: 0.0129
+    t_250: 0.0161
+    t_300: 0.0193
+    t_400: 0.0257
+    t_500: 0.0322
+    t_600: 0.0386
+    t_700: 0.0450
+    t_850: 0.0547
+    t_925: 0.0595
+    t_1000: 0.0643
+    u_50: 0.0032
+    u_100: 0.0064
+    u_150: 0.0096
+    u_200: 0.0129
+    u_250: 0.0161
+    u_300: 0.0193
+    u_400: 0.0257
+    u_500: 0.0322
+    u_600: 0.0386
+    u_700: 0.0450
+    u_850: 0.0547
+    u_925: 0.0595
+    u_1000: 0.0643
+    v_50: 0.0032
+    v_100: 0.0064
+    v_150: 0.0096
+    v_200: 0.0129
+    v_250: 0.0161
+    v_300: 0.0193
+    v_400: 0.0257
+    v_500: 0.0322
+    v_600: 0.0386
+    v_700: 0.0450
+    v_850: 0.0547
+    v_925: 0.0595
+    v_1000: 0.0643
+    z_50: 0.0032
+    z_100: 0.0064
+    z_150: 0.0096
+    z_200: 0.0129
+    z_250: 0.0161
+    z_300: 0.0193
+    z_400: 0.0257
+    z_500: 0.0322
+    z_600: 0.0386
+    z_700: 0.0450
+    z_850: 0.0547
+    z_925: 0.0595
+    z_1000: 0.0643
