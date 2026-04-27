@@ -38,14 +38,14 @@ evaluation:
 
 default_streams:
   ERA5:
-    channels: ["2t", "q_850"] #, "10v", "z_500", "t_850", "u_850", "v_850", "q_850", ]
+    channels: ["2t", "q_850" ,"10v", "z_500", "t_850", "u_850", "v_850", "z_850"]
     evaluation:
-      forecast_step: "all"
+      forecast_step: "1-40"
       sample: "all"
       ensemble: "all" #supported: "all", "mean", [0,1,2]
     plotting:
       sample: [0]
-      forecast_step: 1-20 #supported: "all", [1,2,3,...], "1-50" (equivalent of [1,2,3,...50])
+      forecast_step: "1-40" #supported: "all", [1,2,3,...], "1-50" (equivalent of [1,2,3,...50])
       ensemble: "all" #supported: "all", "mean", [0,1,2]
       plot_maps: true
       plot_target: true
@@ -66,25 +66,24 @@ default_streams:
       
 run_ids :
   e3rtjqy5:
-    label: "Baseline"
+    label: "all weights equal 1.0"
     results_base_dir : "./results/e3rtjqy5"
     #NEW: if "streams" is not specified, the default streams are used
     
       
   ywtarl0s:
-    label: "gc_good_scale"
+    label: "GraphCast"
     results_base_dir : "./results/ywtarl0s"
     #NEW: if "streams" is not specified, the default streams are used
 
-  va92ov1e:
-    label: "gc_bad_scale"
-    results_base_dir : "./results/va92ov1e"
-    #NEW: if "streams" is not specified, the default streams are used
-
   i0f17kp8:
-    label: "aifs"
+    label: "AIFS"
     results_base_dir : "./results/i0f17kp8"
     #NEW: if "streams" is not specified, the default streams are used
+
+  c9dclpu2:
+    label: "default config"
+    results_base_dir: "./results/c9dclpu2"
   
   ###############################
 
