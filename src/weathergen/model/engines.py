@@ -32,6 +32,8 @@ from weathergen.model.layers import MLP
 from weathergen.model.utils import ActivationFactory
 from weathergen.utils.utils import get_dtype
 
+MAX_NUMBER_TOKENS_LOCAL_PER_CELL = 256
+
 
 class EmbeddingEngine(torch.nn.Module):
     name: "EmbeddingEngine"
