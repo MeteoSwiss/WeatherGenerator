@@ -64,7 +64,7 @@ fe_impute_latent_noise_std: 1e-4
 # currently fixed to 1.0 (due to limitations with flex_attention and triton)
 forecast_att_dense_rate: 1.0
 
-healpix_level: 5
+healpix_level: 6
 
 rope_2D: False
 
@@ -90,7 +90,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/icon_1deg_forecasting/"
+streams_directory: "./config/streams/era5_icon/"
 streams: ???
 
 # type of zarr_store
@@ -125,7 +125,7 @@ train_logging:
 # parameters for data loading
 data_loading :
 
-  num_workers: 6
+  num_workers: 4
   rng_seed: ???
   repeat_data_in_mini_epoch : False
 
@@ -202,7 +202,7 @@ validation_config:
   validate_with_ema: 
     enabled : True
     ema_ramp_up_ratio: 0.09
-    ema_halflife_in_thousands: 600
+    ema_halflife_in_thousands: 1e-3
 
   # parameters for validation samples that are written to disk
   output : {
