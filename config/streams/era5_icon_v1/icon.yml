@@ -12,9 +12,9 @@ ICON :
   filenames : ['/capstor/store/mch/msopr/ml/datasets/mch-realch1-fdb-1km-2005-2025-1h-pl13-v1.0.zarr']
   frequency : 1h
   stream_id : 0
-  source_exclude : ['TOT_PREC_1H', 'TOT_PREC_6H', 'CAPE_ML', 'CAPE_MU', 'CIN_ML', 'CIN_MU', 'CLCH', 'CLCL', 'CLCM', 'CLCT', 'OMEGA_', 'LPI', 'PLCOV', 'SKC', 'SKT', 'SOILTYP', 'W_SO']
-  target_exclude : [ 'TOT_PREC_6H', 'CAPE_ML', 'CAPE_MU', 'CIN_ML', 'CIN_MU', 'CLCH', 'CLCL', 'CLCM', 'CLCT', 'OMEGA_', 'LPI', 'PLCOV', 'SKC', 'SKT', 'SOILTYP', 'W_SO']
-  geoinfo channels : ['FR_LAND', 'FIS', 'SSO_STDH', 'SSO_SIGMA', 'SSO_GAMMA', 'SSO_THETA', 'insolation'] 
+  source_exclude : ['TOT_PREC_1H', 'TOT_PREC_6H', 'CAPE_ML', 'CAPE_MU', 'CIN_ML', 'CIN_MU', 'CLCH', 'CLCL', 'CLCM', 'CLCT', 'OMEGA_', 'LPI', 'PLCOV', 'SKC', 'SKT', 'W_SO']
+  target_exclude : [ 'TOT_PREC_6H', 'CAPE_ML', 'CAPE_MU', 'CIN_ML', 'CIN_MU', 'CLCH', 'CLCL', 'CLCM', 'CLCT', 'OMEGA_', 'LPI', 'PLCOV', 'SKC', 'SKT', 'W_SO']
+  geoinfo_channels : ['FR_LAND', 'FIS', 'SSO_STDH', 'SSO_SIGMA', 'SSO_GAMMA', 'SSO_THETA', 'insolation', 'SOILTYP'] 
   loss_weight : 1.
   #location_weight : cosine_latitude
   masking_rate : 0.6
