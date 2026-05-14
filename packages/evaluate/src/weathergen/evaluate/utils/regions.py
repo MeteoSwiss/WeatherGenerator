@@ -30,6 +30,7 @@ class RegionLibrary:
         "tropics": (-30.0, 30.0, -180.0, 180.0, ccrs.PlateCarree()),
         "belgium": (49, 52, 2, 7, ccrs.PlateCarree()),
         "europe": (35, 70, -10, 40, ccrs.PlateCarree()),
+        "ch": (35, 70, -10, 30, ccrs.PlateCarree()),
         "arctic": (50.0, 90.0, -180.0, 180.0, ccrs.Stereographic(central_longitude=0, central_latitude=90)),
         "uwc-west": (39.0, 63.0, -26.0, 41.0, ccrs.PlateCarree()),
         "arome": (37.0, 56.0, -12.0, 16.0, ccrs.PlateCarree()),

@@ -27,6 +27,10 @@ from matplotlib.collections import LineCollection
 from scipy.stats import skew
 from scipy.stats import wasserstein_distance as wd
 
+import json
+import shapely.geometry as sgeom
+
+
 try:
     import datashader as ds
     import pandas as pd
@@ -62,6 +66,58 @@ def _download_cartopy_off(enabled: bool) -> None:
         )
     else:
         warnings.filterwarnings("default", category=DownloadWarning)
+
+
+_BORDERS_GEOJSON = work_dir / "borders.geojson"
+
+
+def _load_border_geometries():
+    """Load country border geometries from the local GeoJSON file, or return None."""
+
+    if not _BORDERS_GEOJSON.exists():
+        return None
+    
+    try:
+        data = json.loads(_BORDERS_GEOJSON.read_text())
+        geoms = [
+            sgeom.shape(f["geometry"])
+            for f in data.get("features", [])
+            if f.get("geometry")
+        ]
+        return geoms if geoms else None
+    except Exception:
+        _logger.warning(f"Could not load local border geometries")
+        return None
+
+
+_BORDER_GEOMETRIES = _load_border_geometries()
+
+
+def _add_borders(ax, linewidth: float = 0.4) -> bool:
+    """Add country border outlines and coastlines
+    """
+    added = False
+
+    if _BORDER_GEOMETRIES is not None:
+        try:
+            ax.add_geometries(
+                _BORDER_GEOMETRIES,
+                crs=ccrs.PlateCarree(),
+                facecolor="none",
+                edgecolor="black",
+                linewidth=linewidth,
+            )
+            added = True
+        except Exception:
+            _logger.warning("Could not add local border geometries")
+
+    try:
+        ax.coastlines(resolution="110m", linewidth=linewidth)
+        added = True
+    except Exception:
+        _logger.warning("Could not add coastlines to plot.")
+
+    return added
 
 
 np.seterr(divide="ignore", invalid="ignore")
@@ -686,6 +742,13 @@ class Plotter:
         x_range = (float(df["x"].min()), float(df["x"].max()))
         y_range = (float(df["y"].min()), float(df["y"].max()))
 
+        # Datashader divides by (end - start)
+        _eps = 1.0
+        if x_range[0] == x_range[1]:
+            x_range = (x_range[0] - _eps, x_range[1] + _eps)
+        if y_range[0] == y_range[1]:
+            y_range = (y_range[0] - _eps, y_range[1] + _eps)
+
         # Determine raster resolution from the figure size + dpi
         fig = ax.get_figure()
         bbox = ax.get_position()
@@ -812,7 +875,7 @@ class Plotter:
             parts.append(str(self.sample))
 
         if "valid_time" in data.coords:
-            valid_time = data["valid_time"][0].values
+            valid_time = data["valid_time"].values.flat[0]
             if ~np.isnat(valid_time):
                 parts.append(
                     valid_time.astype("datetime64[m]")
@@ -893,9 +956,9 @@ class Plotter:
         fig = plt.figure(figsize=figsize, dpi=self.dpi_val)
         ax = fig.add_subplot(1, 1, 1, projection=proj)
         try:
-            ax.coastlines(linewidth=0.3)
+            _add_borders(ax, linewidth=0.3)
         except Exception:
-            _logger.warning("Could not add coastlines to plot; continuing without them.")
+            _logger.warning("Could not add borders to plot; continuing without them.")        
 
         for spine in ax.spines.values():
             spine.set_linewidth(0.3)

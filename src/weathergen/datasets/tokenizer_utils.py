@@ -203,19 +203,33 @@ def tokenize_spacetime(
     idxs_cells_lens = [[] for _ in range(num_healpix_cells)]
 
     offset_step = 0
+    obs_offset = 0
     t_unique = np.unique(rdata.datetimes)
     for _, t in enumerate(t_unique):
         # data for current time step
         mask = t == rdata.datetimes
+        n_t = int(mask.sum())
         rdata_cur = IOReaderData(
             rdata.coords[mask], rdata.geoinfos[mask], rdata.data[mask], rdata.datetimes[mask]
         )
         idxs_cur, idxs_cur_lens = tokenize_space(rdata_cur, token_size, hl, pad_tokens, offset_step)
 
+        # Offset local indices (into rdata_cur) to global indices (into rdata).
+        if obs_offset > 0:
+            idxs_cur = [
+                [
+                    (torch.where(tc > 0, tc + obs_offset, tc) if pad_tokens else tc + obs_offset)
+                    for tc in cell_tokens
+                ]
+                for cell_tokens in idxs_cur
+            ]
+
         # collect data for all time steps
         idxs_cells = [t + tc for t, tc in zip(idxs_cells, idxs_cur, strict=True)]
         idxs_cells_lens = [t + tc_l for t, tc_l in zip(idxs_cells_lens, idxs_cur_lens, strict=True)]
         offset_step += mask.sum()
+
+        obs_offset += n_t
 
     return idxs_cells, idxs_cells_lens
 
