@@ -94,10 +94,7 @@ _BORDER_GEOMETRIES = _load_border_geometries()
 
 
 def _add_borders(ax, linewidth: float = 0.4) -> bool:
-    """Add country border outlines and coastlines
-    """
-    added = False
-
+    """Add country border outlines, falling back to coastlines if borders are unavailable."""
     if _BORDER_GEOMETRIES is not None:
         try:
             ax.add_geometries(
@@ -107,17 +104,16 @@ def _add_borders(ax, linewidth: float = 0.4) -> bool:
                 edgecolor="black",
                 linewidth=linewidth,
             )
-            added = True
+            return True
         except Exception:
-            _logger.warning("Could not add local border geometries")
+            _logger.warning("Could not add local border geometries; falling back to coastlines.")
 
     try:
         ax.coastlines(resolution="110m", linewidth=linewidth)
-        added = True
+        return True
     except Exception:
         _logger.warning("Could not add coastlines to plot.")
-
-    return added
+        return False
 
 
 np.seterr(divide="ignore", invalid="ignore")

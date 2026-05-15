@@ -1,0 +1,18 @@
+stages:
+  - name: inference
+    stage: inference
+    from_run_id: ycgzx8vj
+    config_files:
+      - config/config_forecasting_inf.yml
+    options:
+      - training_config.forecast.num_steps=40
+      - test_config.output.num_samples=10 
+      - test_config.start_date=202310010000 
+      - test_config.end_date=202312300000 
+      - test_config.samples_per_mini_epoch=16
+      - test_config.shuffle = True
+    chain_jobs: 2
+    nodes: 1
+    slurm_args:
+      - "--time=23:59:00"
+
