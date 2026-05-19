@@ -90,9 +90,9 @@ default_streams:
       plot_subtimesteps: true
 
 run_ids :
-  p7r9gysb:
+  e60i8q5a:
     label: "ICON + ERA5 (64 epochs)"
-    results_base_dir: "./results/p7r9gysb"
+    results_base_dir: "./results/e60i8q5a"
 
   # scn09avu:
   #   label: "ICON + ERA5 (healpix=5)"
