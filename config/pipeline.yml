@@ -4,8 +4,8 @@ stages:
     config_files:
       - config/config_forecasting.yml
     options:
-      - training_config.num_mini_epochs=16
       - ae_local_max_tokens_per_cell=256
+      - data_loading.num_workers=6
     chain_jobs: 4
     nodes: 2
     slurm_args:
