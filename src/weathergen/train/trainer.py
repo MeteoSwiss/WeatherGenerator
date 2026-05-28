@@ -308,6 +308,7 @@ class Trainer(TrainerBase):
                     ):
                         raise ValueError("Missing latent_state for chunked forecast continuation.")
 
+                torch.cuda.empty_cache()
                 chunk_pbar.update(1)
 
     def inference(self, cf, devices, run_id_contd, mini_epoch_contd):
@@ -720,13 +721,13 @@ class Trainer(TrainerBase):
 
                     should_write_output = bidx < num_samples_write
                     if compute_loss:
-                        batch.to_device(self.device)
+                        batch.to_device(self.device, include_target_coords=False)
                     else:
                         if should_write_output:
                             targets_and_auxs = self._get_output_target_and_auxs(mode_cfg, batch)
                         else:
                             targets_and_auxs = {}
-                        batch.to_device(self.device, include_targets=False)
+                        batch.to_device(self.device, include_targets=False, include_target_coords=False)
 
                     # evaluate model
                     with torch.autocast(

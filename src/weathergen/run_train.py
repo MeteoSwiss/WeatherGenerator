@@ -85,6 +85,8 @@ def run_inference(args):
     Note: Additional configuration for inference (`test_config`) is set in the function.
     """
 
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     cli_overwrite = config.from_cli_arglist(args.options)
     cf = config.load_merge_configs(
         args.private_config,

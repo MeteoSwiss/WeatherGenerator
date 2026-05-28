@@ -136,7 +136,7 @@ class StreamData:
 
         return self
 
-    def to_device(self, device: str) -> None:
+    def to_device(self, device: str, include_target_coords: bool = True) -> None:
         """
         Move data to GPU
 
@@ -144,6 +144,9 @@ class StreamData:
         ----------
         device : str
             Device the data is moved/mapped to.
+        include_target_coords : bool
+            If False, skip moving target_coords/target_coords_lens/target_tokens to device.
+            Use this for chunked inference where coords are loaded lazily per step.
 
         Returns
         -------
@@ -151,9 +154,10 @@ class StreamData:
         """
 
         dv = device
-        self.target_coords = [t.to(dv, non_blocking=True) for t in self.target_coords]
-        self.target_coords_lens = [t.to(dv, non_blocking=True) for t in self.target_coords_lens]
-        self.target_tokens = [t.to(dv, non_blocking=True) for t in self.target_tokens]
+        if include_target_coords:
+            self.target_coords = [t.to(dv, non_blocking=True) for t in self.target_coords]
+            self.target_coords_lens = [t.to(dv, non_blocking=True) for t in self.target_coords_lens]
+            self.target_tokens = [t.to(dv, non_blocking=True) for t in self.target_tokens]
 
         # move to device if source data is present
         if not np.array([s is None for s in self.source_tokens_cells]).all():

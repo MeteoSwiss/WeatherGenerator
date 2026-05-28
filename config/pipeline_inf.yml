@@ -1,16 +1,20 @@
 stages:
   - name: inference
     stage: inference
-    from_run_id: ycgzx8vj
+    from_run_id: n1w9j2as
     config_files:
       - config/config_forecasting_inf.yml
     options:
       - training_config.forecast.num_steps=20
-      - test_config.output.num_samples=10 
-      - test_config.start_date=202310010000 
-      - test_config.end_date=202312300000 
+      - test_config.output.num_samples=10
+      - test_config.start_date=202310010000
+      - test_config.end_date=202312300000
       - test_config.samples_per_mini_epoch=16
-      - test_config.shuffle = True
+      - test_config.shuffle=True
+      - training_config.forecast.chunk_size=1
+      - data_loading.num_workers=1
+      - ae_local_max_tokens_per_cell=256
+      - test_config.compute_loss=False
     chain_jobs: 2
     nodes: 1
     slurm_args:

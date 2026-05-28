@@ -820,10 +820,11 @@ class Model(torch.nn.Module):
         tokens_nbors_lens[0] = 0
 
         # pair with tokens from assimilation engine to obtain target tokens
+        device = tokens.device
         for stream_name in self.streams.keys():
             # extract target coords for current stream and fstep and convert to one tensor
             t_coords = [
-                batch.samples[i_b].streams_data[stream_name].target_coords[batch_step]
+                batch.samples[i_b].streams_data[stream_name].target_coords[batch_step].to(device)
                 for i_b in range(batch_size)
             ]
             t_coords_lens = [len(t) for t in t_coords]
@@ -854,7 +855,7 @@ class Model(torch.nn.Module):
                 # lens for varlen attention
                 tcls = torch.cat(
                     [
-                        sample.streams_data[stream_name].target_coords_lens[batch_step]
+                        sample.streams_data[stream_name].target_coords_lens[batch_step].to(device)
                         for sample in batch.samples
                     ]
                 )
