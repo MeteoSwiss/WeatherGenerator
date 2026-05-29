@@ -308,6 +308,7 @@ class Trainer(TrainerBase):
                     ):
                         raise ValueError("Missing latent_state for chunked forecast continuation.")
 
+                source_samples.physical = [{} for _ in source_samples.physical]
                 torch.cuda.empty_cache()
                 chunk_pbar.update(1)
 
