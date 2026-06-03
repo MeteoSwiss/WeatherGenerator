@@ -90,7 +90,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/era5_1deg_forecasting/"
+streams_directory: "./config/streams/icon_1deg_forecasting/"
 streams: ???
 
 # type of zarr_store
@@ -156,7 +156,7 @@ training_config:
     policy_warmup: "cosine"
     policy_decay: "constant"
     policy_cooldown: "linear"
-    parallel_scaling_policy: "sqrt"
+    parallel_scaling_policy: "linear"
 
   optimizer:
     grad_clip: 1.0
@@ -164,8 +164,8 @@ training_config:
     log_grad_norms: False
     adamw :
       # parameters are scaled by number of DDP workers
-      beta1 : 0.98125 # == 0.85 on 2 nodes x 4 gpus
-      beta2 : 0.9875  # == 0.90 on 2 nodes x 4 gpus
+      beta1 : 0.9953125 # == 0.85 on 2 nodes x 4 gpus  before: 0.98125 
+      beta2 : 0.996875  # == 0.90 on 2 nodes x 4 gpus  before: 0.9875
       eps : 2e-08
 
   losses : {
