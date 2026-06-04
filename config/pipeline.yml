@@ -4,7 +4,7 @@ stages:
     config_files:
       - config/config_forecasting.yml
     options:
-      - training_config.mini_epochs=16
+      - training_config.num_mini_epochs=16
       - data_loading.num_workers=4
       - ae_local_max_tokens_per_cell=256
     chain_jobs: 2
