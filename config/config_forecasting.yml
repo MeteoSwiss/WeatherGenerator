@@ -90,7 +90,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/icon_1deg_forecasting/"
+streams_directory: "./config/streams/era5_icon_1deg_forecasting/"
 streams: ???
 
 # type of zarr_store
