@@ -146,11 +146,11 @@ training_config:
   time_window_len: 06:00:00
   
   learning_rate_scheduling :
-    lr_start: 5e-5
+    lr_start: 1e-6
     lr_max: 5e-5
     lr_final_decay: 2e-6
     lr_final: 0.0
-    num_steps_warmup: 0
+    num_steps_warmup: 256
     num_steps_cooldown: 512
     policy_warmup: "cosine"
     policy_decay: "constant"
@@ -186,6 +186,7 @@ training_config:
       offset: 1
       num_steps: 3
       policy: "fixed"
+      chunk_size: 3
 
 
 # validation config; full validation config is merge of training and validation config

@@ -32,7 +32,7 @@
 
 evaluation:
   metrics  : ["rmse", "froct"]
-  regions: ["global", "ch"]
+  regions: ["global", "ICON"]
   summary_plots : true
   ratio_plots : false
   heat_maps : false
@@ -50,7 +50,7 @@ evaluation:
 
 
 global_plotting_options:
-  regions: ["ch", "global"]
+  regions: ["ICON", "global"]
   ICON:
     use_datashader: true
   ERA5:
@@ -90,9 +90,9 @@ default_streams:
       plot_subtimesteps: true
 
 run_ids :
-  e60i8q5a:
+  za6hqboe:
     label: "ICON + ERA5 (64 epochs)"
-    results_base_dir: "./results/e60i8q5a"
+    results_base_dir: "./results/za6hqboe"
 
   # scn09avu:
   #   label: "ICON + ERA5 (healpix=5)"
