@@ -462,10 +462,7 @@ class QueryAggregationEngine(torch.nn.Module):
             if isinstance(block, MultiSelfAttentionHeadVarlen):
                 tokens = checkpoint(block, tokens, x_lens=batch_lens, coords=coords, use_reentrant=False)
             else:
-                if isinstance(block, MLP) and not block.is_dit:
-                    tokens = checkpoint(block, tokens, coords, aux_info, use_reentrant=False)
-                else:
-                    tokens = checkpoint(block, tokens, coords=coords, aux_info=aux_info, use_reentrant=False)
+                tokens = checkpoint(block, tokens, coords, aux_info, use_reentrant=False)
                     
                 
         return tokens
