@@ -396,7 +396,7 @@ class DiffusionForecastEngine(torch.nn.Module):
             is either a list of per-step tensors (when ``return_trajectory=True``)
             or ``None``.
         """
-        x = torch.randn(batch_size, self.num_healpix_cells, self.cf.ae_global_dim_embed).to(device="cuda")
+        x = torch.randn(batch_size, self.num_healpix_cells + self.cf.num_register_tokens, self.cf.ae_global_dim_embed).to(device="cuda")
 
         # --- Training-aligned sigma bounds ---
         # Training noise: sigma = exp(eta * p_std + p_mean), eta ~ N(0,1).
