@@ -101,6 +101,10 @@ class LossLatentDiffusion(LossModuleBase):
         pred_tokens_all = [pl["latent_state"].z_pre_norm for pl in preds.latent if pl and "latent_state" in pl]
         target_tokens_all = [latent["diffusion_latent"] for latent in targets.latent if latent]
 
+        #remove the register and class tokens from the predictions and targets
+        pred_tokens_all = [tokens[:, self.cf.num_register_tokens + self.cf.num_class_tokens :] for tokens in pred_tokens_all]
+        target_tokens_all = [tokens[:, self.cf.num_register_tokens + self.cf.num_class_tokens :] for tokens in target_tokens_all]
+
         # In ensemble mode predict_latent is not called, so latent predictions are absent.
         # Return a zero loss rather than crashing.
         if not pred_tokens_all:
