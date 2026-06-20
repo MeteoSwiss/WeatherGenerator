@@ -2,7 +2,7 @@ stages:
   - name: pretrain
     stage: train
     from_run_id : n1w9j2as
-    mini_epoch : 62
+    mini_epoch : 61   
     config_files:
       - config/config_forecasting_con.yml
     options:

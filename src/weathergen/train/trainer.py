@@ -575,11 +575,14 @@ class Trainer(TrainerBase):
                 enabled=cf.with_mixed_precision,
             ):
                 x = batch.get_source_samples()
+                output_idxs = x.get_output_idxs()
                 preds = self.model(
-                    self.model_params,
-                    x,
-                    x.get_output_len(),
+                    self.model_params, 
+                    x, 
+                    len(output_idxs),
                 )
+                offset = output_idxs[0] if output_idxs else 0
+                preds.physical = [{}] * offset + preds.physical
 
                 targets_and_auxs = {}
                 for loss_name, target_aux in self.target_and_aux_calculators.items():
@@ -722,7 +725,7 @@ class Trainer(TrainerBase):
 
                     should_write_output = bidx < num_samples_write
                     if compute_loss:
-                        batch.to_device(self.device, include_target_coords=False)
+                        batch.to_device(self.device, include_target_coords=True)
                     else:
                         if should_write_output:
                             targets_and_auxs = self._get_output_target_and_auxs(mode_cfg, batch)
