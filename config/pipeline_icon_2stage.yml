@@ -1,0 +1,48 @@
+stages:
+  - name: icon6h
+    stage: train
+    config_files:
+      - config/config_forecasting_stage1_6h.yml
+    options:
+      - ae_local_max_tokens_per_cell=256
+      - data_loading.num_workers=6
+      - training_config.num_mini_epochs=96
+    chain_jobs: 5
+    nodes: 2
+    slurm_args:
+      - "--time=23:59:00"
+
+  - name: icon1h
+    stage: train
+    from_run_id: STAGE.icon6h
+    config_files:
+      - config/config_forecasting_stage2_1h.yml
+    options:
+      - ae_local_max_tokens_per_cell=256
+      - data_loading.num_workers=6
+      - training_config.num_mini_epochs=32
+    chain_jobs: 3
+    nodes: 2
+    slurm_args:
+      - "--time=23:59:00"
+
+  - name: inference
+    stage: inference
+    from_run_id: STAGE.icon1h
+    config_files:
+      - config/config_forecasting_inf.yml
+    options:
+      - training_config.forecast.num_steps=20
+      - test_config.output.num_samples=10
+      - test_config.start_date=202310010000
+      - test_config.end_date=202312300000
+      - test_config.samples_per_mini_epoch=16
+      - test_config.shuffle=True
+      - training_config.forecast.chunk_size=1
+      - data_loading.num_workers=1
+      - ae_local_max_tokens_per_cell=256
+      - test_config.compute_loss=False
+    chain_jobs: 2
+    nodes: 1
+    slurm_args:
+      - "--time=23:59:00"

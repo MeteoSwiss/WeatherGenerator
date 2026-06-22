@@ -90,7 +90,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/era5_icon_v2/"
+streams_directory: "./config/streams/era5_icon_v1/"  # stage 2: ICON @ 1h (6 timepoints per 6h window)
 streams: ???
 
 # type of zarr_store
@@ -99,6 +99,7 @@ zarr_store: "zip" # "zarr" for LocalStore, "zip" for ZipStore
 general:
 
   # mutable parameters
+  istep: 0
   rank: ???
   world_size: ???
 
@@ -135,7 +136,7 @@ training_config:
   # training_mode: "masking", "student_teacher", "latent_loss"
   training_mode: ["masking"]
 
-  num_mini_epochs: 128
+  num_mini_epochs: 32
   samples_per_mini_epoch: 4096
   shuffle: True
 
@@ -145,6 +146,9 @@ training_config:
   time_window_step: 06:00:00
   time_window_len: 06:00:00
   
+  # Fresh fine-tune schedule for stage 2 (con1.yml pattern): start at plateau, no re-warmup,
+  # own linear cooldown over the last 512 steps. Avoids the LR-jump bug from extending a cooled
+  # schedule (see memory: multistage-continuation-lr-and-oom).
   learning_rate_scheduling :
     lr_start: 5e-5
     lr_max: 5e-5
@@ -184,8 +188,9 @@ training_config:
   forecast :
       time_step: 06:00:00
       offset: 1
-      num_steps: 8
+      num_steps: 3
       policy: "fixed"
+      chunk_size: 3
 
 
 # validation config; full validation config is merge of training and validation config
