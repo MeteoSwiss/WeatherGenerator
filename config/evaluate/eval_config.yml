@@ -94,6 +94,10 @@ run_ids :
     label: "ICON + ERA5 (64 epochs)"
     results_base_dir: "./results/za6hqboe"
 
+  mfmyuhjb:
+    label: "ICON + ERA5 (128 epochs)"
+    results_base_dir: "./results/mfmyuhjb"
+
   # scn09avu:
   #   label: "ICON + ERA5 (healpix=5)"
   #   results_base_dir : "./results/scn09avu"
