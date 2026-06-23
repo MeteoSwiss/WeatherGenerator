@@ -146,9 +146,7 @@ training_config:
   time_window_step: 06:00:00
   time_window_len: 06:00:00
   
-  # Fresh fine-tune schedule for stage 2 (con1.yml pattern): start at plateau, no re-warmup,
-  # own linear cooldown over the last 512 steps. Avoids the LR-jump bug from extending a cooled
-  # schedule (see memory: multistage-continuation-lr-and-oom).
+
   learning_rate_scheduling :
     lr_start: 5e-5
     lr_max: 5e-5
