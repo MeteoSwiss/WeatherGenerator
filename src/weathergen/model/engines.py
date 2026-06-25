@@ -142,16 +142,10 @@ class EmbeddingEngine(torch.nn.Module):
         " Increase ae_local_max_tokens_per_cell in config."
 
         # compute scatter index across batch items and input steps
-        tok_counts_all = batch.tokens_lens.permute([2, 0, 1, 3]).flatten()
-        scatter_idxs = torch.repeat_interleave(
-            torch.ones(len(tok_counts_all), dtype=torch.int64, device=tok_counts_all.device),
-            tok_counts_all,
-        )
-        scatter_idxs = scatter_idxs.cumsum(0) - 1
+        scatter_idxs = self.get_scatter_idxs_vectorized(batch)
 
         # per cell indices into positional encoding
-        tok_counts = batch.tokens_lens.permute([2, 0, 1, 3]).sum(0).flatten()
-        pe_idxs = torch.cat([torch.arange(int(c), device=tok_counts.device) for c in tok_counts])
+        pe_idxs = self.get_pe_idxs_vectorized(batch)[scatter_idxs]
 
         # iterate over all streams and write embedded tokens incrementally to lower peak memory
         offset = 0
