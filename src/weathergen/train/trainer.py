@@ -244,6 +244,11 @@ class Trainer(TrainerBase):
         output_idxs = batch.get_output_idxs()
         forecast_step_offset = output_idxs[0] if len(output_idxs) > 0 else 0
 
+        assert sum(chunks) == len(output_idxs), (
+            f"forecast chunks cover {sum(chunks)} steps but batch has {len(output_idxs)} "
+            f"forecast indices; check forecast.num_steps vs output_offset/output_steps."
+        )
+
         with tqdm.tqdm(
             total=len(chunks),
             disable=self.cf.with_ddp or len(chunks) <= 1,
@@ -582,7 +587,7 @@ class Trainer(TrainerBase):
                     len(output_idxs),
                 )
                 offset = output_idxs[0] if output_idxs else 0
-                preds.physical = [{}] * offset + preds.physical
+                preds.physical = [{} for _ in range(offset)] + preds.physical
 
                 targets_and_auxs = {}
                 for loss_name, target_aux in self.target_and_aux_calculators.items():
