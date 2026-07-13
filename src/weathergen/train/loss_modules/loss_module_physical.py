@@ -118,6 +118,8 @@ class LossPhysical(LossModuleBase):
 
         tok_spacetime = stream_info.get("tokenize_spacetime", None)
         target_times_unique = np.unique(target_times) if tok_spacetime else [target_times]
+        if tok_spacetime and stream_info.get("target_substeps", "all") == "first":
+            target_times_unique = target_times_unique[:1]
         substep_masks = []
         for t in target_times_unique:
             # find substep
