@@ -320,6 +320,7 @@ def tokenize_apply_mask_target(
     hpy_verts_local,
     hpy_nctrs,
     enc_time,
+    decoder_absolute_coords: bool = False,
 ):
     """
     Apply masking to the data.
@@ -386,6 +387,7 @@ def tokenize_apply_mask_target(
             hpy_verts_rots,
             hpy_verts_local,
             hpy_nctrs,
+            decoder_absolute_coords,
         )
         coords_local.requires_grad = False
     else:
@@ -428,9 +430,10 @@ def get_target_coords_local(
     verts_rots,
     verts_local,
     nctrs,
+    decoder_absolute_coords: bool = False,
 ):
     """Generate local coordinates for target coords w.r.t healpix cell vertices and
-    and for healpix cell vertices themselves
+    and for healpix cell vertices themselves.
     """
 
     # target_coords_lens = [len(t) for t in target_coords]
@@ -520,5 +523,11 @@ def get_target_coords_local(
     # remaining geoinfos (zenith angle etc)
     zi = 99
     a[..., (geoinfo_offset + zi) :] = target_coords[..., (geoinfo_offset + 2) :]
+
+    if decoder_absolute_coords:
+        a[..., 98] = np.sin(coords[:, 0])
+        a[..., 97] = np.cos(coords[:, 0])
+        a[..., 96] = np.sin(coords[:, 1])
+        a[..., 95] = np.cos(coords[:, 1])
 
     return a

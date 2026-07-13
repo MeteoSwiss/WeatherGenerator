@@ -40,11 +40,14 @@ def readerdata_to_torch(rdata: IOReaderData) -> IOReaderData:
 
 
 class TokenizerMasking(Tokenizer):
-    def __init__(self, healpix_level: int, masker: Masker):
+    def __init__(
+        self, healpix_level: int, masker: Masker, decoder_absolute_coords: bool = False
+    ):
         super().__init__(healpix_level)
         self.masker = masker
         self.rng = None
         self.token_size = None
+        self.decoder_absolute_coords = decoder_absolute_coords
 
     def reset_rng(self, rng) -> None:
         """
@@ -179,6 +182,7 @@ class TokenizerMasking(Tokenizer):
             self.hpy_verts_local_target,
             self.hpy_nctrs_target,
             encode_times_target,
+            self.decoder_absolute_coords,
         )
 
         return (coords_local, coords_per_cell)
