@@ -1,0 +1,24 @@
+stages:
+  - name: pretrain
+    stage: train
+    config_files:
+      - config/config_forecasting_era5_cerra.yml
+    options:
+      - training_config.num_mini_epochs=64
+      - data_loading.num_workers=8
+    chain_jobs: 5
+    nodes: 2
+    slurm_args:
+      - "--time=23:59:00"
+
+  - name: inf
+    stage: inference
+    from_run_id : STAGE.pretrain
+    config_files:
+      - config/config_forecasting_era5_cerra_inf.yml
+    chain_jobs: 2
+    nodes: 1
+    slurm_args:
+      - "--time=23:59:00"
+      
+
