@@ -710,7 +710,9 @@ class Model(torch.nn.Module):
             tokens, posteriors = self.encoder(model_params, batch_ctx)
             output.add_latent_prediction(0, "posteriors", posteriors)
 
-            shape = (len(batch), batch.get_num_steps(), *tokens.shape[1:])
+            # recover batch dimension and separate input_steps
+            shape = (len(batch), batch.get_num_source_steps(), *tokens.shape[1:])
+            # collapse along input step dimension
             tokens = tokens.reshape(shape).sum(axis=1)
         else:
             step_offset = batch.step_offset + len(batch.physical)
