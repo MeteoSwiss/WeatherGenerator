@@ -53,12 +53,22 @@ def write_output(
     forecast_offset = timestep_idxs[0]
 
     # Diffusion inference inflates the model output's fstep dimension to one entry per
-    # ODE denoising step (the trajectory). The batch only has the original physical
-    # forecast indices, so synthesize a contiguous run of indices starting at the
-    # original first index to cover every entry in model_output / target_aux_out.
+    # ODE denoising step (the trajectory). Both model_output.physical and
+    # target_aux_out.physical are then 0-based dense lists of length n_pred_steps (see
+    # _reindex_output_for_trajectory / _expand_targets_to_match_preds), so index them
+    # from 0 regardless of forecast_offset. forecast_offset is kept only for labeling the
+    # output below; using it here would overrun the lists whenever offset > 0.
     n_pred_steps = len(model_output.physical)
     if n_pred_steps > len(timestep_idxs):
-        timestep_idxs = list(range(forecast_offset, forecast_offset + n_pred_steps))
+        timestep_idxs = list(range(n_pred_steps))
+
+    # Drop "offset gap" positions: target_aux_out.physical[t] is an empty {} wherever
+    # compute() did not populate a target (it only fills range(offset, output_steps), and
+    # the diffusion inflation replicates that empty leading slot across the trajectory).
+    # Those positions carry no target to pair with the prediction, and indexing a stream
+    # into them raises KeyError. The physical loss skips them the same way. No-op when
+    # every entry is populated (offset == 0, or the non-diffusion path).
+    timestep_idxs = [t for t in timestep_idxs if target_aux_out.physical[t]]
 
     targets_lens = []
 

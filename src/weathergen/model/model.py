@@ -783,6 +783,16 @@ class Model(torch.nn.Module):
         tokens, posteriors, intermediates = self.encoder(model_params, batch)
         output.add_latent_prediction(0, "posteriors", posteriors)
 
+        # --- debug: dump tokens_used to disk (append; one tensor per forward pass) ---
+        import os
+
+        tokens_used = tokens[0, :, :]
+        _dump_dir = "/users/ktezcan/projects/Meteoswiss/WeatherGenerator/personal/clariden"
+        with open(os.path.join(_dump_dir, "tokens_used.pt"), "ab") as _f:
+            torch.save(tokens_used.detach().to(torch.float32).cpu(), _f)
+        print(">>>> saved tokens <<<<")
+        # --- end debug ---
+        
         # recover batch dimension and separate input_steps
         shape = (len(batch), batch.get_num_steps(), *tokens.shape[1:])
         # Reshape tokens to [B, T, ...]

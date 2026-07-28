@@ -269,7 +269,6 @@ class Trainer(TrainerBase):
         device_type = torch.accelerator.current_accelerator()
         self.device = torch.device(f"{device_type}:{cf.local_rank}")
         self.ema_model = None
-        [stream.update({"max_num_targets": -1}) for stream in cf.streams]
 
         # create data loader
         # only one needed since we only run the validation code path
@@ -710,6 +709,34 @@ class Trainer(TrainerBase):
 
             dataset_val_iter = iter(self.data_loader_validation)
             num_samples_write = mode_cfg.get("output", {}).get("num_samples", 0) * batch_size
+
+
+            #############################
+            with torch.no_grad():
+                # print progress bar but only in interactive mode, i.e. when without ddp
+                with tqdm.tqdm(
+                    total=len(self.data_loader_validation), disable=self.cf.with_ddp
+                ) as pbar:
+                    for bidx, batch in enumerate(dataset_val_iter):
+                        batch.to_device(self.device)
+
+                        # evaluate model
+                        with torch.autocast(
+                            device_type=f"cuda:{cf.local_rank}",
+                            dtype=self.mixed_precision_dtype,
+                            enabled=cf.with_mixed_precision,
+                        ):
+                            print(">> running the sample ", str(bidx))
+                            preds = self.model(
+                                    self.model_params,
+                                    batch.get_source_samples(),
+                                )
+                            
+                        pbar.update(batch_size)
+
+                        if (bidx * batch_size) > mode_cfg.samples_per_mini_epoch:
+                            break
+            #############################
 
             with torch.no_grad():
                 # print progress bar but only in interactive mode, i.e. when without ddp
