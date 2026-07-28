@@ -711,32 +711,32 @@ class Trainer(TrainerBase):
             num_samples_write = mode_cfg.get("output", {}).get("num_samples", 0) * batch_size
 
 
-            #############################
-            with torch.no_grad():
-                # print progress bar but only in interactive mode, i.e. when without ddp
-                with tqdm.tqdm(
-                    total=len(self.data_loader_validation), disable=self.cf.with_ddp
-                ) as pbar:
-                    for bidx, batch in enumerate(dataset_val_iter):
-                        batch.to_device(self.device)
+            # #############################
+            # with torch.no_grad():
+            #     # print progress bar but only in interactive mode, i.e. when without ddp
+            #     with tqdm.tqdm(
+            #         total=len(self.data_loader_validation), disable=self.cf.with_ddp
+            #     ) as pbar:
+            #         for bidx, batch in enumerate(dataset_val_iter):
+            #             batch.to_device(self.device)
 
-                        # evaluate model
-                        with torch.autocast(
-                            device_type=f"cuda:{cf.local_rank}",
-                            dtype=self.mixed_precision_dtype,
-                            enabled=cf.with_mixed_precision,
-                        ):
-                            print(">> running the sample ", str(bidx))
-                            preds = self.model(
-                                    self.model_params,
-                                    batch.get_source_samples(),
-                                )
+            #             # evaluate model
+            #             with torch.autocast(
+            #                 device_type=f"cuda:{cf.local_rank}",
+            #                 dtype=self.mixed_precision_dtype,
+            #                 enabled=cf.with_mixed_precision,
+            #             ):
+            #                 print(">> running the sample ", str(bidx))
+            #                 preds = self.model(
+            #                         self.model_params,
+            #                         batch.get_source_samples(),
+            #                     )
                             
-                        pbar.update(batch_size)
+            #             pbar.update(batch_size)
 
-                        if (bidx * batch_size) > mode_cfg.samples_per_mini_epoch:
-                            break
-            #############################
+            #             if (bidx * batch_size) > mode_cfg.samples_per_mini_epoch:
+            #                 break
+            # #############################
 
             with torch.no_grad():
                 # print progress bar but only in interactive mode, i.e. when without ddp
