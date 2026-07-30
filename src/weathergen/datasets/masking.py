@@ -381,7 +381,12 @@ class Masker:
             for _ in range(target_cfg.get("num_samples", 1)):
                 # determine if forcing dataset => mask is empty
                 if is_stream_forcing(stream_info, self.stage):
-                    target_mask, mask_params = torch.zeros(num_cells, dtype=torch.bool), {}
+                    target_mask = torch.zeros(num_cells, dtype=torch.bool)
+                    # the mask is empty but diffusion still needs its noise level here: the
+                    # latent-diffusion target/aux calculator reads it off the target metadata
+                    mask_params = self._get_diffusion_params(
+                        target_cfg.get("masking_strategy_config", {})
+                    )
                 else:
                     masking_config = target_cfg.get("masking_strategy_config", {})
                     # targets are never randomly dropped
@@ -438,13 +443,6 @@ class Masker:
                 # determine if diagnostic dataset or randomly dropped => mask is empty
                 if is_stream_diagnostic(stream_info, self.stage) or is_stream_dropped:
                     source_mask, mask_params = torch.zeros(num_cells, dtype=torch.bool), {}
-                    # Propagate noise_level_rn from the corresponding target metadata so that
-                    # diffusion.py can access it via the source sample's meta_info during forward.
-                    target_noise_level = target_masks.metadata[target_idx].params.get(
-                        "noise_level_rn"
-                    )
-                    if target_noise_level is not None:
-                        mask_params = {"noise_level_rn": target_noise_level}
                 else:
                     source_mask, mask_params = self._get_mask(
                         num_cells=num_cells,
@@ -453,6 +451,14 @@ class Masker:
                         target_relationship_mask=(relationship, target_masks.get_mask(target_idx)),
                         channel_names=source_channel_names,
                     )
+
+                # One noise level per source/target pair. diffusion.py reads it off the source
+                # metadata to noise the latents, the latent-diffusion loss reads it off the target
+                # metadata to weight the residual; they have to be the same draw. The target is
+                # authoritative, so any value drawn for the source above is discarded here.
+                target_noise_level = target_masks.metadata[target_idx].params.get("noise_level_rn")
+                if target_noise_level is not None:
+                    mask_params["noise_level_rn"] = target_noise_level
 
                 corr = target_idx
                 source_masks.add_mask(
@@ -566,6 +572,29 @@ class Masker:
 
         return (mask, params)
 
+    def _get_diffusion_params(self, masking_strategy_config: dict) -> dict:
+        """Draw the diffusion noise level requested by ``diffusion_rn``.
+
+        Kept separate from mask generation so that streams whose mask is forced empty
+        (forcing streams, randomly dropped sources) still carry ``noise_level_rn``, which
+        the diffusion model and the latent-diffusion loss read from the sample metadata.
+        """
+
+        if "diffusion_rn" not in masking_strategy_config:
+            return {}
+
+        noise_dist = masking_strategy_config.get("noise_distribution", "log_normal")
+        if noise_dist == "log_uniform":
+            # Store log_sigma directly; model interprets it via noise_distribution flag.
+            noise_level_rn = self.rng.uniform(
+                np.log(masking_strategy_config["sigma_min"]),
+                np.log(masking_strategy_config["sigma_max"]),
+            )
+        else:  # log_normal (default): store eta ~ N(0,1)
+            noise_level_rn = self.rng.normal(0.0, 1.0)
+
+        return {"noise_level_rn": noise_level_rn}
+
     def _generate_cell_mask(
         self,
         num_cells: int,
@@ -607,16 +636,7 @@ class Masker:
         elif "forecast" in strategy or strategy == "causal":
             mask = np.ones(num_cells, dtype=np.bool)
 
-            if "diffusion_rn" in masking_strategy_config:
-                noise_dist = masking_strategy_config.get("noise_distribution", "log_normal")
-                if noise_dist == "log_uniform":
-                    # Store log_sigma directly; model interprets it via noise_distribution flag.
-                    masking_params["noise_level_rn"] = self.rng.uniform(
-                        np.log(masking_strategy_config["sigma_min"]),
-                        np.log(masking_strategy_config["sigma_max"]),
-                    )
-                else:  # log_normal (default): store eta ~ N(0,1)
-                    masking_params["noise_level_rn"] = self.rng.normal(0.0, 1.0)
+            masking_params |= self._get_diffusion_params(masking_strategy_config)
 
         elif strategy == "healpix":
             # prepare healpix-based masking
