@@ -73,7 +73,7 @@ use_xsa: true
 with_mixed_precision: true
 with_flash_attention: true
 compile_model: false
-with_fsdp: True # True #False
+with_fsdp: False # True # True #
 ddp_find_unused_parameters: false
 attention_dtype: bf16
 mixed_precision_dtype: bf16
