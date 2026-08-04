@@ -306,7 +306,7 @@ validation_config: {
   start_date: "2023-10-01T00:00",
   end_date: "2023-12-31T00:00",
   validate_with_ema: {
-    enabled: true,
+    enabled: false,
     ema_ramp_up_ratio: 0.09,
     ema_halflife_in_thousands: 1e-3,
     },

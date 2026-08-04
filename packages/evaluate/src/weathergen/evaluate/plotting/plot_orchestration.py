@@ -1034,15 +1034,9 @@ def plot_data(
                 {
                     "plotter_cfg": plotter_cfg,
                     "output_basedir": output_dir,
-<<<<<<< HEAD
-                    "tars": tars,
-                    "preds": preds,
-                    "bias_data": bias_data,
-=======
                     "tars": tars_s,
                     "preds": preds_s,
                     "bias_data": bias_s,
->>>>>>> 1d66f4558cf2ddeaa76fb89d45b06a45d53a7208
                     "sample": sample,
                     "fstep": fstep,
                     "stream": stream,
