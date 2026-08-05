@@ -179,6 +179,14 @@ class Trainer(TrainerBase):
                     "latent_noise_use_additive_noise": False,
                     "latent_noise_deterministic_latents": True,
                     "latent_noise_saturate_encodings": 5,
+                    "latent_vae": {
+                        "enabled": False,
+                        "identity_init": True,
+                        "logvar_init": -5.0,
+                        "kl_reduction": "mean",
+                        "free_bits": 0.0,
+                        "kl_warmup_steps": 0,
+                    },
                 }
             ),
             cf,
@@ -575,11 +583,9 @@ class Trainer(TrainerBase):
                     )
                 continue
 
-            # TODO re-enable this, need to think on how to make it compatible with
-            # student-teacher training
-            # if cf.latent_noise_kl_weight > 0.0:
-            #     kl = torch.cat([posterior.kl() for posterior in output.latent["posteriors"]])
-            #     loss_values.loss += cf.latent_noise_kl_weight * kl.mean()
+            # NOTE: the VAE KL regularisation is a regular loss term now (LossKL, configured
+            # under training_config.losses), so it goes through LossCalculator like any other
+            # and needs no special handling here.
 
             [
                 target_aux.update_state_pre_backward(self.cf.general.istep, batch, self.model)

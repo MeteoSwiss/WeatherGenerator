@@ -783,8 +783,11 @@ class Model(torch.nn.Module):
 
         output = ModelOutput(batch.get_output_len())
 
-        tokens, posteriors, intermediates = self.encoder(model_params, batch)
+        tokens, posteriors, intermediates, latent_posterior = self.encoder(model_params, batch)
         output.add_latent_prediction(0, "posteriors", posteriors)
+        if latent_posterior is not None:
+            output.add_latent_prediction(0, "posterior_mean", latent_posterior[0])
+            output.add_latent_prediction(0, "posterior_logvar", latent_posterior[1])
 
         # # --- debug: dump tokens_used to disk (append; one tensor per forward pass) ---
         # import os

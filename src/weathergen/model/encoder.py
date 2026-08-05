@@ -23,7 +23,7 @@ from weathergen.model.engines import (
 )
 
 # from weathergen.model.model import ModelParams
-from weathergen.model.parametrised_prob_dist import LatentInterpolator
+from weathergen.model.parametrised_prob_dist import GaussianLatentHead, LatentInterpolator
 
 
 class EncoderModule(torch.nn.Module):
@@ -54,6 +54,7 @@ class EncoderModule(torch.nn.Module):
         self.ae_local_global_engine: Local2GlobalAssimilationEngine | None = None
         self.embed_engine: EmbeddingEngine | None = None
         self.interpolator_latents: LatentInterpolator | None = None
+        self.latent_vae: GaussianLatentHead | None = None
 
         # embedding engine
         # determine stream names once so downstream components use consistent keys
@@ -143,6 +144,17 @@ class EncoderModule(torch.nn.Module):
 
         self.ln = torch.nn.LayerNorm(cf.ae_global_dim_embed, elementwise_affine=False)
 
+        # VAE bottleneck on the global latent, i.e. on the very tensor the latent diffusion
+        # model denoises. Sits after self.ln so the N(0,I) prior is consistent with the
+        # already normalised statistics the forecast engine and the decoder consume.
+        vae_cfg = cf.get("latent_vae", None) or {}
+        if vae_cfg.get("enabled", False):
+            self.latent_vae = GaussianLatentHead(
+                cf.ae_global_dim_embed,
+                logvar_init=vae_cfg.get("logvar_init", -5.0),
+                identity_init=vae_cfg.get("identity_init", True),
+            )
+
     def forward(self, model_params, batch):
         """
         Encoder forward
@@ -170,7 +182,16 @@ class EncoderModule(torch.nn.Module):
 
         tokens_global = self.ln(tokens_global)
 
-        return tokens_global, posteriors, intermediates
+        # VAE bottleneck on the global latent. Deliberately outside the checkpoint() calls
+        # above: gradient checkpointing does not track tensors that are only reachable
+        # through non-tensor outputs, which would silently cut the KL term off from the
+        # encoder parameters.
+        latent_posterior = None
+        if self.latent_vae is not None:
+            tokens_global, posterior_mean, posterior_logvar = self.latent_vae(tokens_global)
+            latent_posterior = (posterior_mean, posterior_logvar)
+
+        return tokens_global, posteriors, intermediates, latent_posterior
 
     def interpolate_latents(self, tokens: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         """ "
@@ -179,7 +200,7 @@ class EncoderModule(torch.nn.Module):
 
         if self.cf.latent_noise_kl_weight > 0.0:
             tokens, posteriors = self.interpolator_latents.interpolate_with_noise(
-                tokens, sampling=self.stage
+                tokens, sampling=self.training
             )
         else:
             posteriors = torch.zeros((1,), device=tokens.device)

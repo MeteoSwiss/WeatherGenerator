@@ -86,9 +86,27 @@ norm_eps: 1e-4
 
 latent_noise_kl_weight: 0.0 # 1e-5
 latent_noise_gamma: 2.0
-latent_noise_saturate_encodings: 5 
+latent_noise_saturate_encodings: 5
 latent_noise_use_additive_noise: False
 latent_noise_deterministic_latents: True
+
+# VAE bottleneck on the global latent (after the global assimilation engine and its layer
+# norm), i.e. on the tensor the latent diffusion model denoises. The KL term itself is
+# configured as a loss term, see training_config.losses.kl / LossKL.
+latent_vae: {
+  enabled: False,
+  # mean branch initialised to the identity and logvar to a constant, so that a fine-tune
+  # starts from exactly the deterministic auto-encoder it was loaded from
+  identity_init: True,
+  logvar_init: -5.0,
+  # "mean" averages the KL over latent tokens and channels; "sum" reproduces the textbook
+  # per-sample KL, which is O(1e8) here and needs a correspondingly tiny term weight
+  kl_reduction: mean,
+  # per-element KL floor guarding against posterior collapse; 0 disables it
+  free_bits: 0.0,
+  # linear ramp of the KL weight over the first N optimiser steps
+  kl_warmup_steps: 0,
+  }
 
 freeze_modules: ""
 load_chkpt: {}

@@ -627,7 +627,7 @@ def main():
             # was trained with (same as trainer.train / trainer.validate do)
             with torch.autocast(device_type=device.type, dtype=mp_dtype,
                                  enabled=cf.with_mixed_precision):
-                tokens, _ = model.encoder(model_params, batch.get_source_samples())
+                tokens, *_ = model.encoder(model_params, batch.get_source_samples())
             # tokens: (B*T, H, D) after LayerNorm — cast to float32 for accumulation
 
             obs_mask = extract_obs_mask(
