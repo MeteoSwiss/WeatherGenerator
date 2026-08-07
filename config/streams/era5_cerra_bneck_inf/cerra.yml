@@ -23,7 +23,7 @@ CERRA :
   location_weight : cosine_latitude
   masking_rate : 0.6
   masking_rate_none : 0.05
-  token_size : 32   # must equal the multiHP arm: StreamEmbedTransformer.dim_in = token_size
+  token_size : 64   
   tokenize_spacetime : True
   max_num_targets: -1   # inference: decode every target point
   embed : 
