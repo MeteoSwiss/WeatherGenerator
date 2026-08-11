@@ -1,0 +1,20 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+streams_directory: ./config/streams/synop_baseline_ft/
+
+test_config:
+  # Held out from training, which runs 1985-01-01 to 2022-12-31.
+  start_date: 2023-10-01T00:00
+  end_date: 2023-12-31T23:59
+  samples_per_mini_epoch: 120
+  output:
+    num_samples: 120
+  forecast:
+    num_steps: 9

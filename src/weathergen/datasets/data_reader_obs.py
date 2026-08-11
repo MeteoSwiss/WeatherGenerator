@@ -9,21 +9,70 @@
 
 import datetime
 import logging
+import warnings
 from pathlib import Path
 from typing import override
 
+import anemoi.datasets as anemoi_datasets
+import astropy_healpix as hp
 import numpy as np
 import zarr
+from numpy.typing import NDArray
 
+from weathergen.datasets.data_reader_anemoi import _clip_lat, _clip_lon
 from weathergen.datasets.data_reader_base import (
     DataReaderBase,
     ReaderData,
     TimeWindowHandler,
     check_reader_data,
 )
+from weathergen.datasets.utils import coords_to_hpyidxs
 from weathergen.train.utils import Stage
 
 _logger = logging.getLogger(__name__)
+
+
+def _footprint_cells(spec: dict, data_paths: list) -> NDArray:
+    """HEALPix cells covered by another dataset, for restricting an obs stream to its domain.
+
+    Observations are scattered points, so there is no grid to crop. Instead the reference
+    dataset's gridpoints are binned to HEALPix and observations are kept only where they
+    share a cell. Unlike a lat/lon box this follows a projected grid's true outline, which
+    matters for CERRA (rotated Lambert).
+    """
+    level = int(spec["healpix_level"])
+    rings = int(spec.get("rings", 0))
+
+    cells = []
+    for filename in spec["filenames"]:
+        # streams name their datasets, so look them up under data_paths as the sampler does
+        candidates = [Path(filename), *(Path(p) / filename for p in data_paths)]
+        path = next((p for p in candidates if p.exists()), None)
+        assert path is not None, f"footprint dataset not found: {candidates}"
+
+        crop = {k: spec[k] for k in ("area", "trim_edge", "thinning") if k in spec}
+        ds = anemoi_datasets.open_dataset(str(path), **crop)
+        # clip exactly as the anemoi reader does, so both sides use one lon convention
+        lats = _clip_lat(ds.latitudes).astype(np.float64)
+        lons = _clip_lon(ds.longitudes).astype(np.float64)
+        cells.append(coords_to_hpyidxs(level, lats, lons))
+
+    selected = np.unique(np.concatenate(cells))
+
+    # grow by whole cells; a fixed ring count spans less ground at finer levels
+    if rings > 0:
+        in_buffer = np.zeros(12 * 4**level, dtype=np.bool_)
+        in_buffer[selected] = True
+        for _ in range(rings):
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="invalid value encountered")
+                nbrs = hp.neighbours(np.flatnonzero(in_buffer), 2**level, order="nested")
+            nbrs = nbrs.transpose()
+            in_buffer[nbrs[nbrs != -1]] = True
+        selected = np.sort(np.flatnonzero(in_buffer))
+
+    assert selected.size > 0, "footprint selected no healpix cells"
+    return selected
 
 
 class DataReaderObs(DataReaderBase):
@@ -109,6 +158,20 @@ class DataReaderObs(DataReaderBase):
         self.stdev = np.sqrt(np.array(self.properties["vars"]))  # [data_idx])
         self.mean_geoinfo = np.array(self.properties["means"])[self.geoinfo_idx]
         self.stdev_geoinfo = np.sqrt(np.array(self.properties["vars"])[self.geoinfo_idx])
+
+        # optional restriction to another dataset's footprint, e.g. pinning global station
+        # observations to a regional model's domain
+        footprint = stream_info.get("footprint")
+        self.footprint_level, self.footprint_cells = None, None
+        if footprint is not None:
+            self.footprint_level = int(footprint["healpix_level"])
+            self.footprint_cells = _footprint_cells(
+                footprint, list(stream_info.get("data_paths", []))
+            )
+            _logger.info(
+                f"{sname} restricted to footprint of {list(footprint['filenames'])}: "
+                f"{self.footprint_cells.size} cells at healpix level {self.footprint_level}"
+            )
 
         # Create index for samples
         self._setup_sample_index()
@@ -286,6 +349,16 @@ class DataReaderObs(DataReaderBase):
         # compute mask to enforce it
         t_win = self.time_window_handler.window(idx)
         t_mask = np.logical_and(datetimes >= t_win.start, datetimes < t_win.end)
+
+        # drop observations outside the configured footprint; folded into the same mask so
+        # coords, geoinfos, data and datetimes stay aligned
+        if self.footprint_cells is not None:
+            obs_cells = coords_to_hpyidxs(
+                self.footprint_level,
+                coords[:, 0].astype(np.float64),
+                coords[:, 1].astype(np.float64),
+            )
+            t_mask = np.logical_and(t_mask, np.isin(obs_cells, self.footprint_cells))
 
         rdata = ReaderData(
             coords=coords[t_mask],
