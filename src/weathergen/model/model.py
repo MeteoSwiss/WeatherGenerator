@@ -237,26 +237,76 @@ class ModelParams(torch.nn.Module):
         # teacher representation (evaluated without dropout) collapses to low rank.
         self.pe_global.data.fill_(0.0)
         xs = 2.0 * np.pi * torch.arange(0, dim_embed, 2, device=self.pe_global.device) / dim_embed
+
+        # query-identity term; constant when ae_local_num_queries == 1, kept so that >1 works
         self.pe_global.data[..., 0::2] = 0.5 * torch.sin(
             torch.outer(8 * torch.arange(cf.ae_local_num_queries, device=self.pe_global.device), xs)
-        )
-        self.pe_global.data[..., 0::2] += (
-            torch.sin(
-                torch.outer(torch.arange(self.num_healpix_cells, device=self.pe_global.device), xs)
-            )
-            .unsqueeze(1)
-            .repeat((1, cf.ae_local_num_queries, 1))
         )
         self.pe_global.data[..., 1::2] = 0.5 * torch.cos(
             torch.outer(8 * torch.arange(cf.ae_local_num_queries, device=self.pe_global.device), xs)
         )
-        self.pe_global.data[..., 1::2] += (
-            torch.cos(
-                torch.outer(torch.arange(self.num_healpix_cells, device=self.pe_global.device), xs)
+
+        if cf.get("ae_global_pe_geographic", False):
+            # Geographic cell-identity term. The index-based encoding below is sinusoidal in the
+            # nested cell index, so its lowest frequencies are near-constant within a coarse
+            # parent cell and show up as blocks in the latent. A multi-scale sin/cos encoding of
+            # (lat, lon) is continuous over the sphere and still gives every cell a distinct code.
+            # r3tos2 returns azimuth wrapped to (-pi, pi] via atan2; remainder() unwraps it to
+            # [0, 2pi) so a domain straddling the wrap stays continuous.
+            pe_verts, _ = healpix_verts_rots(self.healpix_level, 0.5, 0.5)
+            pe_coords = r3tos2(pe_verts.to(self.pe_global.device)).to(torch.float32)
+            pe_lat = pe_coords[:, 0]
+            pe_lon = torch.remainder(pe_coords[:, 1], 2 * torch.pi)
+
+            # GLOBAL normalisation to [0, 1] so a checkpoint's PE means the same thing whatever
+            # the domain. lat in [-pi/2, pi/2], lon in [0, 2pi).
+            u_lat = (pe_lat + torch.pi / 2) / torch.pi
+            u_lon = pe_lon / (2 * torch.pi)
+
+            # Geometric frequency ladder from 1 cycle per globe to ~4 cycles per healpix cell:
+            # the finest scale resolves individual cells, the coarsest is smooth over the sphere.
+            # dim_embed is split 4 ways: sin/cos x lat/lon.
+            n_freq = dim_embed // 4
+            cell_frac = (58.6 / (2**self.healpix_level)) / 360.0
+            max_freq = 4.0 / cell_frac
+            freqs = torch.exp(
+                torch.linspace(0.0, float(np.log(max_freq)), n_freq, device=self.pe_global.device)
             )
-            .unsqueeze(1)
-            .repeat((1, cf.ae_local_num_queries, 1))
-        )
+
+            ang_lat = 2 * torch.pi * torch.outer(u_lat, freqs)
+            ang_lon = 2 * torch.pi * torch.outer(u_lon, freqs)
+            pe_geo = torch.cat(
+                [torch.sin(ang_lat), torch.cos(ang_lat), torch.sin(ang_lon), torch.cos(ang_lon)],
+                dim=-1,
+            )  # (num_healpix_cells, 4 * n_freq)
+
+            assert pe_geo.shape[-1] == dim_embed, (
+                f"geographic pe_global width {pe_geo.shape[-1]} != dim_embed {dim_embed}; "
+                "ae_global_dim_embed must be divisible by 4."
+            )
+
+            self.pe_global.data += (
+                pe_geo.to(self.pe_global.dtype).unsqueeze(1).repeat((1, cf.ae_local_num_queries, 1))
+            )
+        else:
+            self.pe_global.data[..., 0::2] += (
+                torch.sin(
+                    torch.outer(
+                        torch.arange(self.num_healpix_cells, device=self.pe_global.device), xs
+                    )
+                )
+                .unsqueeze(1)
+                .repeat((1, cf.ae_local_num_queries, 1))
+            )
+            self.pe_global.data[..., 1::2] += (
+                torch.cos(
+                    torch.outer(
+                        torch.arange(self.num_healpix_cells, device=self.pe_global.device), xs
+                    )
+                )
+                .unsqueeze(1)
+                .repeat((1, cf.ae_local_num_queries, 1))
+            )
 
         # healpix neighborhood structure
 
