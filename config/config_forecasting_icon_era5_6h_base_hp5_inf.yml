@@ -1,0 +1,9 @@
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T23:59
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 20
+streams_directory: ./config/streams/icon_era5_base_hp5_6h_inf/
