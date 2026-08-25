@@ -103,6 +103,28 @@ sigma_min_quantile: 0.05
 # Number of ODE denoising steps at inference. If null, uses diffusion.forward's default.
 fe_diffusion_num_inference_steps: null
 
+# --- Particle guidance (diverse ensemble sampling) ---
+# Denoise the ensemble members jointly with a repulsive force between them instead of
+# independently (Corso et al. 2024, repulsion-only / "fixed potential" variant). The RBF
+# kernel acts per HEALPix cell, so the spread it creates is local. Only has an effect when
+# fe_diffusion_num_ensemble_members > 1; with it False the sampler is the plain EDM ODE.
+diffusion_particle_guidance: False
+# Repulsion magnitude as a fraction of the ODE drift at sigma_max, annealed by the schedule
+# below. 0.1 perturbs each step by ~10%; raise it until the member spread in the sampling
+# diagnostics plot moves, and stop before per-member forecast skill degrades.
+diffusion_particle_guidance_strength: 0.1
+# Exponent p in alpha(sigma) = strength * (sigma / sigma_max_eff) ** p. Repulsion is
+# strongest at high sigma, where the trajectory still decides which mode it falls into,
+# and anneals to zero so that members finish on-manifold.
+diffusion_particle_guidance_sigma_power: 1.0
+# Space in which pairwise member distances are measured: "x0" (denoiser output; distances
+# reflect differences in the predicted forecast) or "xt" (the noisy state, where at high
+# sigma the distances are dominated by the independent noise draws).
+diffusion_particle_guidance_kernel_space: "x0"
+# HEALPix cells per batch when computing the repulsion; 0 = all at once. Memory/speed
+# trade-off only -- the cells are independent, so the result is identical either way.
+diffusion_particle_guidance_cell_chunk: 4096
+
 healpix_level: 5
 
 # Use 2D RoPE instead of traditional global positional encoding
