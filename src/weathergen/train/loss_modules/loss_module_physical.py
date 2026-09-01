@@ -224,8 +224,11 @@ class LossPhysical(LossModuleBase):
 
             # TODO: make nicer
             output_step_loss_weights = self._get_output_step_weights(len(targets.output_idxs))
-            if len(targets.physical) - len(targets.output_idxs) > 0:
-                output_step_loss_weights.insert(0, None)
+            # leading placeholder fsteps (forecast.offset > 0) carry no target and no
+            # prediction; give each of them a None weight so the weight list stays aligned
+            # with the fstep index used below
+            num_leading_pad = len(targets.physical) - len(targets.output_idxs)
+            output_step_loss_weights = [None] * max(0, num_leading_pad) + output_step_loss_weights
 
             # loss_stream: loss for given stream
             loss_stream = torch.tensor(0.0, device=self.device, requires_grad=True)

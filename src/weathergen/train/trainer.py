@@ -397,7 +397,16 @@ class Trainer(TrainerBase):
 
         if not compute_full_loss:
             # this modifies targets_and_auxs in place
-            target_aux_chunk.physical = [target_aux.physical[step] for step in chunk]
+            # The first chunk's ModelOutput keeps leading placeholder slots [0..forecast_offset)
+            # so that a slot index equals the global forecast step (see ModelOutput.__init__).
+            # Pad the trimmed targets the same way — with forecast.offset > 0 preds would
+            # otherwise be longer than the targets and the loss calculator's strict zip raises.
+            # Later chunks start at their own step, so the padding is empty for them.
+            num_leading_pad = chunk[0] - preds.forecast_steps[0]
+            target_aux_chunk.physical = [{} for _ in range(num_leading_pad)] + [
+                target_aux.physical[step] for step in chunk
+            ]
+            target_aux_chunk.output_idxs = chunk
             targets_and_auxs[physical_loss_names[0]] = target_aux_chunk
 
         return preds, targets_and_auxs
