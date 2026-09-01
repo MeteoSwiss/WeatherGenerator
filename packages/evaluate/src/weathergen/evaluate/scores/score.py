@@ -265,12 +265,12 @@ class Scores:
             f = self.det_metrics_dict[score_name]
             _logger.debug(f"Using deterministic metric: {score_name}")
         elif score_name in self.prob_metrics_dict.keys():
-            assert self.ens_dim in data.prediction.dims, (
-                f"Probablistic score {score_name} chosen, but ensemble dimension {self.ens_dim} "
+            assert self._ens_dim in data.prediction.dims, (
+                f"Probablistic score {score_name} chosen, but ensemble dimension {self._ens_dim} "
                 "not found in prediction data. Skipping score calculation."
             )
-            return None
             f = self.prob_metrics_dict[score_name]
+            _logger.debug(f"Using probabilistic metric: {score_name}")
         else:
             raise ValueError(
                 f"Unknown score chosen. Supported scores: {
@@ -1666,8 +1666,10 @@ class Scores:
                     * noise_fac
                 )
         # preserve the other coordinates
+        # keep the dims alongside the values: after the histogram reduction we must drop
+        # any coord whose dimension no longer exists (npoints -> rank_bin).
         preserved_coords = {
-            c: obs_stacked[c].values
+            c: (obs_stacked[c].dims, obs_stacked[c].values)
             for c in obs_stacked.coords
             if all(dim not in {self._ens_dim, "npoints"} for dim in obs_stacked[c].dims)
         }
@@ -1684,11 +1686,17 @@ class Scores:
         )
 
         # Reattach preserved coordinates by broadcasting
-        for coord_name, coord_values in preserved_coords.items():
+        for coord_name, (coord_dims, coord_values) in preserved_coords.items():
             # Only keep unique values along npoints if necessary
             if coord_name in rank_counts.coords:
                 continue
-            rank_counts = rank_counts.assign_coords({coord_name: coord_values})
+            # The histogram collapses npoints into rank_bin, so coordinates carried on
+            # dimensions that no longer exist (e.g. init_times) cannot be attached.
+            if not set(coord_dims).issubset(set(rank_counts.dims)):
+                continue
+            rank_counts = rank_counts.assign_coords(
+                {coord_name: (coord_dims, coord_values) if coord_dims else coord_values}
+            )
 
         # provide normalized rank counts if desired
         if norm:
