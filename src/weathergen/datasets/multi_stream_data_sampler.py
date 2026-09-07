@@ -919,9 +919,17 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         worker_info = torch.utils.data.get_worker_info()
 
         if worker_info is None:
-            # assert self.world_size == 1, self.world_size
-            iter_start = 0
-            iter_end = len(self)
+            # num_workers=0 -> loading happens in the main process. This branch used to
+            # hardcode [0, len(self)), discarding the rank offset computed above, so every
+            # DDP rank iterated the same slice of the same permutation (reset() seeds from
+            # self.data_loader_rng_seed, which is only made rank-unique in the worker branch
+            # below) and therefore drew the SAME samples. Partition by rank instead.
+            iter_start = local_start
+            iter_end = local_end
+            logger.info(
+                f"{self.rank}::no-worker : dataset [{local_start},{local_end})"
+                + f" : [{iter_start},{iter_end})"
+            )
 
         else:
             # ensure the rng seed is fully unique across workers and mini_epochs
