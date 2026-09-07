@@ -184,6 +184,15 @@ class DiffusionForecastEngine(torch.nn.Module):
         # Space in which pairwise member distances are measured: "x0" (denoiser output,
         # recommended) or "xt" (the noisy state itself).
         self.pg_kernel_space = self.cf.get("diffusion_particle_guidance_kernel_space", "x0")
+        # Time constant tau, in forecast steps, of the exponential fade applied across the
+        # rollout on top of the sigma schedule; 0 disables the fade.
+        self.pg_fstep_decay = self.cf.get("diffusion_particle_guidance_fstep_decay", 0.0)
+        # First forecast step of the rollout. The fade is measured from here so that it
+        # starts at 1.0 on the first step actually generated, rather than part-way down
+        # the curve when forecast.offset > 0.
+        self.pg_fstep_offset = (
+            self.cf.get("training_config", {}).get("forecast", {}).get("offset", 0)
+        )
         # Number of HEALPix cells whose particle systems are solved at once; 0 = all.
         # Purely a memory/speed trade-off, the result is identical either way.
         self.pg_cell_chunk = self.cf.get("diffusion_particle_guidance_cell_chunk", 4096)
@@ -515,6 +524,17 @@ class DiffusionForecastEngine(torch.nn.Module):
         )
         return intermediate_x
 
+    def _pg_fstep_fade(self, fstep: int) -> float:
+        """Across-rollout fade factor exp(-fstep / tau); 1.0 when the fade is disabled.
+
+        Measured from ``pg_fstep_offset`` (the rollout's first forecast step) and clamped
+        at zero below it, so the first generated step always receives the full strength
+        even when ``forecast.offset > 0``.
+        """
+        if not self.pg_fstep_decay:
+            return 1.0
+        return math.exp(-max(0, fstep - self.pg_fstep_offset) / self.pg_fstep_decay)
+
     @staticmethod
     def _pg_scale(drift: torch.Tensor, force: torch.Tensor, alpha: float) -> torch.Tensor:
         """Scale factor putting the repulsion at ``alpha`` times the ODE drift magnitude.
@@ -536,6 +556,7 @@ class DiffusionForecastEngine(torch.nn.Module):
         denoised: torch.Tensor,
         sigma: torch.Tensor,
         sigma_max_eff: float,
+        fstep: int,
     ) -> "tuple[torch.Tensor, float, float]":
         """Repulsive force between ensemble members, computed per HEALPix cell.
 
@@ -576,17 +597,30 @@ class DiffusionForecastEngine(torch.nn.Module):
         the forecast they encode -- repulsion there would push apart along noise
         directions, which the next denoiser call simply undoes.
 
+        On top of the sigma schedule the strength is faded across the rollout as
+        exp(-fstep / tau). This is not cosmetic: the members share identical conditioning
+        only at the first forecast step, which is the one place the repulsion is doing
+        real work -- choosing different modes from the same information. Afterwards the
+        conditioning is per-member and already diverged, so the model's own dynamics grow
+        the spread and further repulsion double-counts it. Worse, the effect compounds:
+        k steps of a (1 + eps) inflation give (1 + eps)^k, making the total injected
+        spread a function of how far you rolled out. Under the fade the product
+        telescopes to ~exp(eps * tau), bounded independently of rollout length.
+
         Args:
             x: Current noisy state, shape (N, T, D).
             denoised: Denoiser output D(x; sigma) at this step, shape (N, T, D).
             sigma: Current noise level (scalar tensor).
             sigma_max_eff: Upper bound of the sampling schedule, used to normalise the
                 annealing factor.
+            fstep: Global forecast step, used for the across-rollout fade. Counted from
+                the first generated step, so forecast.offset > 0 still starts at 1.0.
 
         Returns:
             ``(force, alpha, spread)``. *force* has shape (N, T, D) and points away from
             the other members (zero on the register/class tokens); it is unnormalised, the
-            caller sets its magnitude. *alpha* is the annealing factor at this sigma.
+            caller sets its magnitude. *alpha* is the annealing factor at this sigma and
+            forecast step.
             *spread* is the RMS pairwise member distance in kernel space -- the quantity
             particle guidance exists to increase, and the main diagnostic for tuning.
         """
@@ -594,6 +628,7 @@ class DiffusionForecastEngine(torch.nn.Module):
         n_special = self.cf.num_register_tokens + self.cf.num_class_tokens
 
         alpha = self.pg_strength * (float(sigma.item()) / sigma_max_eff) ** self.pg_sigma_power
+        alpha *= self._pg_fstep_fade(fstep)
 
         # Kernel coordinates (N, H, D) with the non-spatial tokens dropped, transposed to
         # (H, N, D) so that each HEALPix cell is one independent particle system.
@@ -730,10 +765,14 @@ class DiffusionForecastEngine(torch.nn.Module):
                 "fe_diffusion_num_ensemble_members > 1."
             )
         if log_diagnostics and pg_active:
+            # The sampling diagnostics plot is written to a fixed path and so only ever
+            # shows the last forecast step; this line is how the across-rollout fade is
+            # actually observable.
             logger.info(
                 f"Particle guidance active: strength={self.pg_strength}, "
                 f"sigma_power={self.pg_sigma_power}, kernel_space={self.pg_kernel_space}, "
-                f"members={batch_size}"
+                f"members={batch_size}, fstep={fstep}, tau={self.pg_fstep_decay}, "
+                f"fstep_fade={self._pg_fstep_fade(fstep):.4f}"
             )
 
         # --- Time step discretization (EDM Eq. 5) with training-aligned bounds ---
@@ -788,7 +827,7 @@ class DiffusionForecastEngine(torch.nn.Module):
             d_cur = (x_hat - denoised) / t_hat
             if pg_active:
                 pg_force, pg_alpha, pg_spread = self._particle_guidance_repulsion(
-                    x_hat, denoised, t_hat, sigma_max_eff
+                    x_hat, denoised, t_hat, sigma_max_eff, fstep
                 )
                 d_cur = d_cur - self._pg_scale(d_cur, pg_force, pg_alpha) * pg_force
             x_next = x_hat + (t_next - t_hat) * d_cur
@@ -799,7 +838,7 @@ class DiffusionForecastEngine(torch.nn.Module):
                 d_prime = (x_next - denoised) / t_next
                 if pg_active:
                     pg_force_p, pg_alpha_p, _ = self._particle_guidance_repulsion(
-                        x_next, denoised, t_next, sigma_max_eff
+                        x_next, denoised, t_next, sigma_max_eff, fstep
                     )
                     d_prime = d_prime - self._pg_scale(d_prime, pg_force_p, pg_alpha_p) * pg_force_p
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)

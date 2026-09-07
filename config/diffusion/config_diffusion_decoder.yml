@@ -121,6 +121,16 @@ diffusion_particle_guidance_sigma_power: 1.0
 # reflect differences in the predicted forecast) or "xt" (the noisy state, where at high
 # sigma the distances are dominated by the independent noise draws).
 diffusion_particle_guidance_kernel_space: "x0"
+# Time constant tau, in forecast steps, of an exponential fade exp(-fstep / tau) applied to
+# the strength across the rollout; 0 disables it. Worth setting: members share identical
+# conditioning only at the first forecast step, which is where the repulsion does real work
+# (picking different modes from the same information). Later steps start from per-member
+# conditioning that has already diverged, so more repulsion double-counts spread the
+# dynamics already produce -- and it compounds, k steps of a (1+eps) inflation giving
+# (1+eps)^k. Under the fade the total stays ~exp(eps*tau) regardless of rollout length.
+# tau of 2-4 is a sensible starting range. Measured from the rollout's first generated
+# step, so forecast.offset > 0 still starts at full strength.
+diffusion_particle_guidance_fstep_decay: 0.0
 # HEALPix cells per batch when computing the repulsion; 0 = all at once. Memory/speed
 # trade-off only -- the cells are independent, so the result is identical either way.
 diffusion_particle_guidance_cell_chunk: 4096
