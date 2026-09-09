@@ -187,12 +187,10 @@ class DiffusionForecastEngine(torch.nn.Module):
         # Time constant tau, in forecast steps, of the exponential fade applied across the
         # rollout on top of the sigma schedule; 0 disables the fade.
         self.pg_fstep_decay = self.cf.get("diffusion_particle_guidance_fstep_decay", 0.0)
-        # First forecast step of the rollout. The fade is measured from here so that it
-        # starts at 1.0 on the first step actually generated, rather than part-way down
-        # the curve when forecast.offset > 0.
-        self.pg_fstep_offset = (
-            self.cf.get("training_config", {}).get("forecast", {}).get("offset", 0)
-        )
+        # First forecast step of the rollout. Fades are measured from here so that they
+        # start at 1.0 on the first step actually generated, rather than part-way down
+        # the curve when forecast.offset > 0. Shared with the conditioning noise fade.
+        self.fstep_offset = self._stage_forecast_offset()
         # Number of HEALPix cells whose particle systems are solved at once; 0 = all.
         # Purely a memory/speed trade-off, the result is identical either way.
         self.pg_cell_chunk = self.cf.get("diffusion_particle_guidance_cell_chunk", 4096)
@@ -209,6 +207,54 @@ class DiffusionForecastEngine(torch.nn.Module):
         _s_max = self.cf.get("fe_diffusion_s_max", None)
         self.s_max = math.inf if _s_max is None else float(_s_max)
         self.s_noise = float(self.cf.get("fe_diffusion_s_noise", 1.0))
+
+        # --- Conditioning noise (per-member perturbation of the latent conditioning) ---
+        # Inference only; see _perturb_conditioning(). 0.0 (the default) leaves the
+        # conditioning untouched and does not draw from the RNG at all.
+        self.cond_noise_std = float(self.cf.get("diffusion_conditioning_noise_std", 0.0))
+        # Time constant tau, in forecast steps, of an exponential fade exp(-fstep / tau) on
+        # the amplitude across the rollout; 0 keeps it constant.
+        self.cond_noise_fstep_decay = float(
+            self.cf.get("diffusion_conditioning_noise_fstep_decay", 0.0)
+        )
+        # Norm the amplitude is relative to: "token" (each HEALPix token's own RMS, so the
+        # perturbation follows the local token magnitude) or "member" (one RMS per member,
+        # i.e. a spatially uniform amplitude).
+        self.cond_noise_norm_scope = self.cf.get("diffusion_conditioning_noise_norm_scope", "token")
+        assert self.cond_noise_norm_scope in {"token", "member"}, (
+            f"diffusion_conditioning_noise_norm_scope must be 'token' or 'member' "
+            f"(got '{self.cond_noise_norm_scope}')"
+        )
+        # How the perturbation is applied along the denoising trajectory:
+        #   "cads"  CADS (Sadat et al., ICLR 2024, arXiv:2310.17347): re-corrupted at every
+        #           denoising step under the gamma(t) schedule below, so the conditioning is
+        #           destroyed at high sigma and fully restored by the end of the ODE.
+        #   "fixed" one draw per forecast step, held constant through the whole ODE -- the
+        #           member keeps a persistent perturbed state to forecast from.
+        self.cond_noise_schedule = self.cf.get("diffusion_conditioning_noise_schedule", "cads")
+        assert self.cond_noise_schedule in {"cads", "fixed"}, (
+            f"diffusion_conditioning_noise_schedule must be 'cads' or 'fixed' "
+            f"(got '{self.cond_noise_schedule}')"
+        )
+        # CADS gamma(t) thresholds on trajectory progress t (1 at the first denoising step,
+        # 0 at the last): no corruption for t <= tau1, full corruption for t >= tau2, linear
+        # in between. Paper defaults tau1=0.6, tau2=1.0.
+        self.cond_noise_tau1 = float(self.cf.get("diffusion_conditioning_noise_tau1", 0.6))
+        self.cond_noise_tau2 = float(self.cf.get("diffusion_conditioning_noise_tau2", 1.0))
+        assert 0.0 <= self.cond_noise_tau1 <= self.cond_noise_tau2 <= 1.0, (
+            f"diffusion_conditioning_noise_tau1/tau2 must satisfy 0 <= tau1 <= tau2 <= 1 "
+            f"(got tau1={self.cond_noise_tau1}, tau2={self.cond_noise_tau2})"
+        )
+        # CADS rescaling mix psi: fraction of the corrupted conditioning taken from the
+        # variant renormalised back to the clean mean/std. 1.0 (the paper's recommendation)
+        # rescales fully, 0.0 disables it.
+        self.cond_noise_rescale_psi = float(
+            self.cf.get("diffusion_conditioning_noise_rescale_psi", 1.0)
+        )
+        assert 0.0 <= self.cond_noise_rescale_psi <= 1.0, (
+            f"diffusion_conditioning_noise_rescale_psi must be in [0, 1] "
+            f"(got {self.cond_noise_rescale_psi})"
+        )
 
         self.cur_token = None  # TODO: re move after single sample experiments
         self._noised_tokens: torch.Tensor | None = None
@@ -511,6 +557,8 @@ class DiffusionForecastEngine(torch.nn.Module):
             # (N, H, D) on subsequent steps (stored by model.py after the previous ensemble step).
             # expand() is a no-op when the leading dim already matches N, so this handles both.
             c_batched = c.expand(num_ensemble_members, *c.shape[1:]) if c is not None else None
+            # Perturb after expanding, so each member gets its own draw.
+            c_batched = self._store_perturbed_conditioning(c_batched, fstep, meta_info)
             final_x, _ = self._run_ode(
                 c=c_batched,
                 fstep=fstep,
@@ -523,6 +571,7 @@ class DiffusionForecastEngine(torch.nn.Module):
             return final_x
 
         # Default trajectory mode: return all intermediate ODE states (existing behaviour).
+        c = self._store_perturbed_conditioning(c, fstep, meta_info)
         _, intermediate_x = self._run_ode(
             c=c,
             fstep=fstep,
@@ -533,16 +582,39 @@ class DiffusionForecastEngine(torch.nn.Module):
         )
         return intermediate_x
 
-    def _pg_fstep_fade(self, fstep: int) -> float:
-        """Across-rollout fade factor exp(-fstep / tau); 1.0 when the fade is disabled.
+    def _stage_forecast_offset(self) -> int:
+        """``forecast.offset`` of the stage this run is executing.
 
-        Measured from ``pg_fstep_offset`` (the rollout's first forecast step) and clamped
-        at zero below it, so the first generated step always receives the full strength
-        even when ``forecast.offset > 0``.
+        ``validation_config`` and ``test_config`` are overlays on ``training_config``
+        (see ``Trainer.__init__``), so at inference the offset is whichever of them
+        defines it, most specific first -- reading ``training_config`` alone would report
+        the training offset for a run whose ``test_config.forecast.offset`` differs.
         """
-        if not self.pg_fstep_decay:
+        stage_keys = (
+            ["test_config", "validation_config", "training_config"]
+            if self.cf.get("stage", None) == "inference"
+            else ["training_config"]
+        )
+        for key in stage_keys:
+            offset = self.cf.get(key, {}).get("forecast", {}).get("offset", None)
+            if offset is not None:
+                return offset
+        return 0
+
+    def _fstep_fade(self, fstep: int, tau: float) -> float:
+        """Across-rollout fade factor exp(-fstep / tau); 1.0 when ``tau`` is 0 (disabled).
+
+        Measured from ``fstep_offset`` (the rollout's first forecast step) and clamped at
+        zero below it, so the first generated step always receives the full strength even
+        when ``forecast.offset > 0``.
+        """
+        if not tau:
             return 1.0
-        return math.exp(-max(0, fstep - self.pg_fstep_offset) / self.pg_fstep_decay)
+        return math.exp(-max(0, fstep - self.fstep_offset) / tau)
+
+    def _pg_fstep_fade(self, fstep: int) -> float:
+        """Particle-guidance strength fade across the rollout; see :meth:`_fstep_fade`."""
+        return self._fstep_fade(fstep, self.pg_fstep_decay)
 
     @staticmethod
     def _pg_scale(drift: torch.Tensor, force: torch.Tensor, alpha: float) -> torch.Tensor:
@@ -730,6 +802,195 @@ class DiffusionForecastEngine(torch.nn.Module):
         x_hat = x_cur + math.sqrt(sigma_hat**2 - sigma**2) * self.s_noise * torch.randn_like(x_cur)
         return x_hat, t_hat
 
+    def _cads_gamma(self, step_idx: int, num_steps: int) -> float:
+        """CADS conditioning-annealing factor at denoising step ``step_idx``.
+
+        ``t`` is the progress along the sampling trajectory, 1.0 at the first step (pure
+        noise) down to 0.0 at the last, and (Sadat et al., arXiv:2310.17347, Eq. 3)::
+
+            gamma(t) = 1                        t <= tau1   (clean conditioning)
+                       (tau2 - t)/(tau2 - tau1) tau1 < t < tau2
+                       0                        t >= tau2   (conditioning destroyed)
+
+        Progress is measured in step index rather than in sigma: the Karras schedule drops
+        sigma by orders of magnitude over the first few steps, so tau thresholds expressed
+        in sigma would concentrate the whole ramp into them, while the paper's thresholds
+        were tuned against a time variable that is roughly linear in the step index.
+        """
+        t = 1.0 - step_idx / max(num_steps - 1, 1)
+        if t <= self.cond_noise_tau1:
+            return 1.0
+        if t >= self.cond_noise_tau2:
+            return 0.0
+        return (self.cond_noise_tau2 - t) / (self.cond_noise_tau2 - self.cond_noise_tau1)
+
+    def _cond_noise_amplitude(self, fstep: int) -> float:
+        """Noise scale ``s`` at forecast step ``fstep``, after the across-rollout fade."""
+        return self.cond_noise_std * self._fstep_fade(fstep, self.cond_noise_fstep_decay)
+
+    def _perturb_conditioning(
+        self, c: torch.Tensor | None, fstep: int, gamma: float | None = None
+    ) -> torch.Tensor | None:
+        """Perturb the latent conditioning tokens per ensemble member (inference only).
+
+        The ensemble's members are denoised from the *same* conditioning, so at the first
+        forecast step everything that separates them is the initial noise draw (plus
+        particle guidance, if enabled). Perturbing the conditioning instead treats the
+        analysis/previous state as uncertain: each member forecasts from its own slightly
+        different information, and the model's own dynamics grow that difference over the
+        rollout. It is complementary to particle guidance -- that one pushes members apart
+        *within* one denoising pass, this one hands them different information to begin
+        with.
+
+        Two ways of applying it along the denoising trajectory, selected by
+        ``diffusion_conditioning_noise_schedule``:
+
+        ``gamma is None`` -- "fixed": plain additive noise, drawn once per forecast step and
+        held constant through the whole ODE::
+
+            c_hat = c + s * scale * n
+
+        so the member carries a persistent perturbed state, the latent analogue of an
+        ensemble of initial conditions.
+
+        ``gamma is not None`` -- "cads" (Sadat et al., ICLR 2024, arXiv:2310.17347): the
+        variance-preserving mix of their Eq. 2, redrawn at every denoising step with
+        ``gamma`` from :meth:`_cads_gamma` rising from 0 to 1 along the trajectory::
+
+            c_hat = sqrt(gamma) * c + s * sqrt(1 - gamma) * scale * n
+
+        The conditioning is therefore destroyed at high sigma -- where the trajectory
+        decides which mode it falls into, and where diversity is won -- and fully restored
+        by the end of the ODE, where condition alignment is what matters. Because it is
+        clean again at the end, the member is left with an unbiased conditioning rather
+        than a persistent offset, which is the substantive difference from "fixed".
+
+        The amplitude is relative to the token norm rather than absolute, because latent
+        token magnitudes vary by orders of magnitude across cells and checkpoints, so a
+        fixed std would be a different perturbation for every run. With
+        ``diffusion_conditioning_noise_norm_scope``::
+
+            "token"  scale_h = rms(c[:, h, :])   per HEALPix token (default)
+            "member" scale   = rms(c[n])         one value per member
+
+        so ``diffusion_conditioning_noise_std = 0.01`` means "perturb each conditioning
+        token by ~1% of its own magnitude". (CADS assumes a standardised conditioning
+        vector and uses an absolute s; scaling by the token RMS is what makes their s
+        transferable to a latent state that is not unit-scale.)
+
+        With ``diffusion_conditioning_noise_rescale_psi`` > 0 the corrupted conditioning is
+        renormalised back to the clean per-member mean/std and mixed back in (their Eq. 4-5,
+        psi=1 recommended); the paper reports this prevents divergence at high noise scales
+        at a small cost in diversity. Note that it also means ``s`` sets the noise-to-signal
+        ratio inside the ramp rather than an absolute magnitude: at gamma=0 there is no
+        signal left to be relative to, and rescaling restores the clean scale whatever s
+        was.
+
+        The noise is drawn independently per member: on the first rollout step ``c`` is a
+        ``(1, H, D)`` tensor expanded to ``(N, H, D)``, and expanding before perturbing is
+        what makes the members differ; on later steps ``c`` is already per-member.
+
+        Both schedules additionally fade the amplitude across the rollout as
+        exp(-fstep / tau) (``diffusion_conditioning_noise_fstep_decay``), for the same
+        reason the particle guidance fade exists: the conditioning is identical across
+        members only at the first forecast step, which is where the perturbation buys
+        spread that is not already there. Later steps start from conditioning that has
+        diverged on its own, and re-injecting a fixed relative perturbation at every step
+        compounds -- k steps of (1 + eps) give (1 + eps)^k, so the injected spread would
+        otherwise depend on how far you rolled out. This axis is absent from CADS, which
+        generates one sample rather than a rollout.
+
+        Register and class tokens are left untouched, matching particle guidance: they
+        carry global state rather than a location's forecast, and perturbing them moves
+        every cell at once instead of adding local uncertainty.
+
+        Single-sample (trajectory) inference is perturbed as well. There is no within-batch
+        spread to create there, but independent runs then differ from one another, which is
+        how an ensemble is assembled from separate jobs rather than from one batched pass.
+
+        No-op -- returns ``c`` unchanged, RNG untouched -- when the feature is off, when the
+        conditioning is not the latent forecast state (the date/time modes condition on a
+        timestamp, which is not a thing to add Gaussian noise to), when the fade has decayed
+        the amplitude to zero, or when ``gamma == 1`` (the CADS schedule leaves most of the
+        trajectory uncorrupted, so this is the common case). Returning the *same object* is
+        what the callers use to detect that nothing happened.
+
+        Note that a perturbed conditioning is materialised: without noise the ensemble
+        conditioning is a stride-0 ``expand`` view costing nothing, so enabling this adds
+        one real ``(N, H, D)`` tensor while the perturbed copy is in use.
+        """
+        if c is None or self.conditioning != "forecast" or self.cond_noise_std <= 0.0:
+            return c
+        if gamma is not None and gamma >= 1.0:
+            return c
+
+        s_eff = self._cond_noise_amplitude(fstep)
+        if s_eff <= 0.0:
+            return c
+
+        n_special = self.cf.num_register_tokens + self.cf.num_class_tokens
+        spatial = c[:, n_special:, :].float()
+        if self.cond_noise_norm_scope == "token":
+            # (N, H, 1): every token gets noise proportional to its own magnitude.
+            scale = spatial.pow(2).mean(dim=-1, keepdim=True).sqrt()
+        else:
+            # (N, 1, 1): one amplitude per member, uniform over the map.
+            scale = spatial.pow(2).mean(dim=(1, 2), keepdim=True).sqrt()
+
+        noise = torch.randn_like(spatial) * scale * s_eff
+        if gamma is None:
+            noised = spatial + noise
+        else:
+            noised = math.sqrt(gamma) * spatial + math.sqrt(1.0 - gamma) * noise
+            if self.cond_noise_rescale_psi > 0.0:
+                # Renormalise to the clean per-member statistics (the analogue of CADS'
+                # per-sample rescaling) and mix back in with psi.
+                dims = (1, 2)
+                mean_c = spatial.mean(dim=dims, keepdim=True)
+                std_c = spatial.std(dim=dims, keepdim=True)
+                mean_n = noised.mean(dim=dims, keepdim=True)
+                std_n = noised.std(dim=dims, keepdim=True).clamp_min(1e-12)
+                rescaled = (noised - mean_n) / std_n * std_c + mean_c
+                psi = self.cond_noise_rescale_psi
+                noised = psi * rescaled + (1.0 - psi) * noised
+
+        perturbed = c.clone()  # materialises the expand() view; see docstring
+        perturbed[:, n_special:, :] = noised.to(c.dtype)
+        return perturbed
+
+    def _store_perturbed_conditioning(
+        self,
+        c: torch.Tensor | None,
+        fstep: int,
+        meta_info: dict[str, SampleMetaData] | None,
+    ) -> torch.Tensor | None:
+        """Apply the "fixed" conditioning perturbation once, before the ODE starts.
+
+        Only for ``diffusion_conditioning_noise_schedule="fixed"``; the CADS schedule
+        re-corrupts the conditioning inside :meth:`_run_ode` at every denoising step and
+        ends on the clean one, so there is nothing to apply (or to store) here.
+
+        The stored conditioning is kept in sync because with
+        ``fe_diffusion_predict_residual`` the caller (``model.py``) adds the tensor held in
+        ``meta_info`` back onto the network output: it has to be the state the denoiser was
+        actually conditioned on, or the residual would be taken relative to the clean state
+        and the perturbation would silently cancel. Nothing is written when the
+        perturbation is a no-op.
+        """
+        if self.cond_noise_schedule != "fixed":
+            return c
+        perturbed = self._perturb_conditioning(c, fstep)
+        if perturbed is not c and meta_info is not None:
+            meta_info["LATENT_CONDITIONING_TOKENS"] = perturbed
+            logger.info(
+                f"Conditioning noise (fixed): std={self.cond_noise_std}, "
+                f"scope={self.cond_noise_norm_scope}, tau={self.cond_noise_fstep_decay}, "
+                f"fstep={fstep}, fstep_fade="
+                f"{self._fstep_fade(fstep, self.cond_noise_fstep_decay):.4f}, "
+                f"s_eff={self._cond_noise_amplitude(fstep):.4g}, members={c.shape[0]}"
+            )
+        return perturbed
+
     def _run_ode(
         self,
         c: torch.Tensor | None,
@@ -821,6 +1082,25 @@ class DiffusionForecastEngine(torch.nn.Module):
                 "denoised, so it is inactive; it requires "
                 "fe_diffusion_num_ensemble_members > 1."
             )
+        # CADS re-corrupts the conditioning at every denoising step; the "fixed" schedule
+        # has already perturbed it once before the ODE (see _store_perturbed_conditioning).
+        cads_active = (
+            c is not None
+            and self.conditioning == "forecast"
+            and self.cond_noise_schedule == "cads"
+            and self._cond_noise_amplitude(fstep) > 0.0
+        )
+        if log_diagnostics and cads_active:
+            n_corrupted = sum(self._cads_gamma(i, num_steps) < 1.0 for i in range(num_steps))
+            logger.info(
+                f"Conditioning noise (CADS): s={self.cond_noise_std}, "
+                f"tau1={self.cond_noise_tau1}, tau2={self.cond_noise_tau2}, "
+                f"psi={self.cond_noise_rescale_psi}, scope={self.cond_noise_norm_scope}, "
+                f"rollout tau={self.cond_noise_fstep_decay}, fstep={fstep}, fstep_fade="
+                f"{self._fstep_fade(fstep, self.cond_noise_fstep_decay):.4f}, "
+                f"s_eff={self._cond_noise_amplitude(fstep):.4g}, "
+                f"corrupted steps={n_corrupted}/{num_steps}, members={batch_size}"
+            )
         if log_diagnostics and pg_active:
             # The sampling diagnostics plot is written to a fixed path and so only ever
             # shows the last forecast step; this line is how the across-rollout fade is
@@ -856,6 +1136,7 @@ class DiffusionForecastEngine(torch.nn.Module):
             "residual_std": [],
             "pg_alpha": [],
             "pg_spread": [],
+            "cads_gamma": [],
             "x": [x.cpu()],
         }
 
@@ -879,8 +1160,17 @@ class DiffusionForecastEngine(torch.nn.Module):
             # churn so it never reaches into the untrained high-sigma tail.
             x_hat, t_hat = self._stochastic_churn(x_cur, t_cur, num_steps, sigma_max_eff)
 
+            # CADS: one corrupted conditioning per denoising step, used by *both* stages of
+            # the Heun step -- re-drawing it between the Euler and the correction evaluation
+            # would have them measure two different vector fields, and the second-order
+            # correction assumes they are the same one.
+            c_step = c
+            if cads_active:
+                gamma = self._cads_gamma(i, num_steps)
+                c_step = self._perturb_conditioning(c, fstep, gamma=gamma)
+
             # Euler step.
-            denoised = self.denoise(x=x_hat, c=c, sigma=t_hat, fstep=fstep, coords=coords)
+            denoised = self.denoise(x=x_hat, c=c_step, sigma=t_hat, fstep=fstep, coords=coords)
             d_cur = (x_hat - denoised) / t_hat
             if pg_active:
                 pg_force, pg_alpha, pg_spread = self._particle_guidance_repulsion(
@@ -891,7 +1181,9 @@ class DiffusionForecastEngine(torch.nn.Module):
 
             # Apply 2nd order correction.
             if i < num_steps - 1:
-                denoised = self.denoise(x=x_next, c=c, sigma=t_next, fstep=fstep, coords=coords)
+                denoised = self.denoise(
+                    x=x_next, c=c_step, sigma=t_next, fstep=fstep, coords=coords
+                )
                 d_prime = (x_next - denoised) / t_next
                 if pg_active:
                     pg_force_p, pg_alpha_p, _ = self._particle_guidance_repulsion(
@@ -914,6 +1206,8 @@ class DiffusionForecastEngine(torch.nn.Module):
                 if pg_active:
                     track["pg_alpha"].append(pg_alpha)
                     track["pg_spread"].append(pg_spread)
+                if cads_active:
+                    track["cads_gamma"].append(gamma)
                 track["x"].append(x_next.cpu())
                 if self.cur_token is not None:
                     track["l2_to_target"].append((x_next - self.cur_token).norm().item())
@@ -944,7 +1238,8 @@ class DiffusionForecastEngine(torch.nn.Module):
         steps = list(range(len(track["sigma"])))
         has_target = len(track["l2_to_target"]) > 0
         has_pg = len(track.get("pg_spread", [])) > 0
-        n_plots = 8 if has_pg else 7
+        has_cads = len(track.get("cads_gamma", [])) > 0
+        n_plots = 7 + int(has_pg) + int(has_cads)
 
         fig, axes = plt.subplots(n_plots, 1, figsize=(10, 3 * n_plots), sharex=True)
 
@@ -1043,6 +1338,39 @@ class DiffusionForecastEngine(torch.nn.Module):
             )
             ax_alpha.set_ylabel("guidance strength")
             ax_alpha.legend(fontsize=8, loc="upper right")
+
+        if has_cads:
+            # 9) CADS conditioning annealing: how much of the conditioning the denoiser
+            # actually sees at each step, and the noise weight that replaces the rest.
+            ax_cads = axes[7 + int(has_pg)]
+            ax_cads.plot(
+                steps,
+                track["cads_gamma"],
+                "o-",
+                markersize=3,
+                color="tab:brown",
+                label="gamma(t) (conditioning kept)",
+            )
+            ax_cads.set_ylabel("gamma")
+            ax_cads.set_ylim(-0.05, 1.05)
+            ax_cads.set_title(
+                f"CADS conditioning annealing  |  s={self.cond_noise_std}, "
+                f"tau1={self.cond_noise_tau1}, tau2={self.cond_noise_tau2}, "
+                f"psi={self.cond_noise_rescale_psi}"
+            )
+            ax_cads.grid(True, alpha=0.3)
+            ax_cads.legend(fontsize=8, loc="upper left")
+            ax_noise = ax_cads.twinx()
+            ax_noise.plot(
+                steps,
+                [math.sqrt(1.0 - g) for g in track["cads_gamma"]],
+                "--",
+                lw=1,
+                color="tab:red",
+                label="sqrt(1 - gamma) (noise weight)",
+            )
+            ax_noise.set_ylabel("noise weight")
+            ax_noise.legend(fontsize=8, loc="upper right")
 
         axes[-1].set_xlabel("sampling step")
         fig.tight_layout()
