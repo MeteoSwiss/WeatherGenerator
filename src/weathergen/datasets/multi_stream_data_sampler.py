@@ -650,6 +650,13 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         # target data: collect for all forecast steps
         output_data = []
         if not is_stream_forcing(stream_ds[0].stream_info, self._stage):
+            # skip target values only for physically reconstructed streams; forcing streams
+            # are skipped entirely above and reconstruct:false (teacher-only) streams keep
+            # their values
+            coords_geoinfos_only = coords_geoinfos_only or (
+                self.skip_target_values
+                and is_stream_reconstructed(stream_ds[0].stream_info, self._stage)
+            )
             num_output_steps = self._get_output_length(num_forecast_steps)
             for timestep_idx in range(self.output_offset, num_output_steps):
                 step_forecast_dt = base_idx + (self.time_step * timestep_idx) // self.step_timedelta
