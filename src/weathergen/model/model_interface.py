@@ -11,15 +11,17 @@
 
 import itertools
 import logging
+from collections import defaultdict
 
 import torch
+from omegaconf import OmegaConf
 from torch.distributed.fsdp import (
     MixedPrecisionPolicy,
     fully_shard,
 )
 from torch.distributed.tensor import DTensor, distribute_tensor
-
 from weathergen.common.config import Config, get_path_model, merge_configs
+
 from weathergen.model.attention import (
     MultiCrossAttentionHeadVarlen,
     MultiCrossAttentionHeadVarlenSlicedQ,
@@ -177,13 +179,117 @@ def init_model_and_shard(
     return model, model_params
 
 
-def _geometry_buffers_to_rebuild(model, params) -> set[str]:
+def _strip_module_prefix(key: str) -> str:
+    """Key without the "module." that DistributedDataParallel adds."""
+
+    return key[len("module.") :] if key.startswith("module.") else key
+
+
+def _remap_encoder_levels(cf, model, params: dict) -> dict:
+    """Rename per-level checkpoint keys so an encoder is reused at a different HEALPix level.
+
+    Encoders are keyed by level (``self.encoders[str(L)]``), so a resolution curriculum gives a
+    stream's encoder a new name and its weights would be dropped as unused. ``{L: L'}`` renames
+    them on load; ``{L: [L, L']}`` copies one encoder into two, for the rung where an encoder
+    splits. Write the levels as STRING keys: the config is saved as JSON, whose keys are always
+    strings, and config.save's _strip_interpolation cannot index an integer key.
+
+    Only buffers are level-sized, and _geometry_buffers_to_rebuild rebuilds those, but
+    ``token_size`` must not change with the level: it is the embedding's input width.
+    """
+
+    remap = cf.get("encoder_level_remap", None)
+    if not remap:
+        return params
+
+    if OmegaConf.is_config(remap):
+        remap = OmegaConf.to_container(remap, resolve=True)
+    remap = {
+        str(src): [str(d) for d in (dst if isinstance(dst, list | tuple) else [dst])]
+        for src, dst in remap.items()
+    }
+
+    # regridders are left out: pure geometry, rebuilt from the new grid either way
+    containers = ("encoders.", "fusion_norms.")
+    model_keys = {_strip_module_prefix(key) for key in model.state_dict()}
+    levels_in_model = {
+        key[len(container) :].partition(".")[0]
+        for container in containers
+        for key in model_keys
+        if key.startswith(container)
+    }
+    # Entries naming a level this model does not have are inherited from an earlier stage: when
+    # continuing, the parent run's saved config is the merge base (config.py:451-454), so a
+    # curriculum accumulates every rung's mapping. Only the applicable ones are kept.
+    stale = {src: [d for d in dsts if d not in levels_in_model] for src, dsts in remap.items()}
+    stale = {src: dsts for src, dsts in stale.items() if dsts}
+    remap = {
+        src: [d for d in dsts if d in levels_in_model]
+        for src, dsts in remap.items()
+        if any(d in levels_in_model for d in dsts)
+    }
+    assert remap, (
+        f"encoder_level_remap names no level this model has: its per-level modules are at "
+        f"{sorted(levels_in_model)}, and every destination was {sorted(stale)}."
+    )
+    if stale and is_root():
+        logger.info(f"Ignoring inherited encoder_level_remap entries for absent levels: {stale}.")
+
+    def split(key: str) -> tuple[str, str, str] | None:
+        """(container, level, rest) of a per-level key, or None."""
+        for container in containers:
+            if key.startswith(container):
+                level, _, rest = key[len(container) :].partition(".")
+                return (container, level, rest) if rest else None
+        return None
+
+    renamed = {}
+    num_renamed, num_dropped = 0, 0
+    for key, tensor in params.items():
+        # the non-sharded path may still carry a "module." prefix at this point
+        prefix = "module." if key.startswith("module.") else ""
+        parts = split(_strip_module_prefix(key))
+        if parts is None or parts[1] not in remap:
+            renamed[key] = tensor
+            continue
+
+        container, level, rest = parts
+        for dst in remap[level]:
+            new_key = f"{prefix}{container}{dst}.{rest}"
+            assert new_key == key or new_key not in params, (
+                f"encoder_level_remap {remap} would overwrite {new_key}, which the checkpoint "
+                "already contains: the source and destination levels both exist in it."
+            )
+            if _strip_module_prefix(new_key) not in model_keys:
+                # a weight of a stream the destination encoder does not serve
+                num_dropped += 1
+                continue
+            renamed[new_key] = tensor
+            num_renamed += 1
+
+    assert num_renamed > 0, (
+        f"encoder_level_remap {remap} matched no checkpoint keys; check the source levels "
+        "against the run being continued."
+    )
+    if is_root():
+        logger.info(
+            f"Reusing encoder weights across levels {remap}: {num_renamed} tensors renamed, "
+            f"{num_dropped} dropped as not part of the destination encoder."
+        )
+
+    return renamed
+
+
+def _geometry_buffers_to_rebuild(model, params) -> tuple[set[str], set[str]]:
     """Checkpoint entries whose shape no longer matches the model.
 
     Grid geometry -- regrid index tables, HEALPix neighbourhoods, positional encodings -- is sized
     by the configured grids, so changing a level or an active region legitimately resizes it. Those
     buffers are dropped here and rebuilt from the current grid by their owner's reset_parameters;
     anything else is a learned weight, and rebuilding it would silently discard training.
+
+    Returns the keys to drop, and of those the ones on a module that also owns learned weights
+    (an encoder reused at a new level): _reinit_missing_modules must refill those in place.
     """
 
     model_sd = model.state_dict()
@@ -191,6 +297,7 @@ def _geometry_buffers_to_rebuild(model, params) -> set[str]:
     modules = dict(model.named_modules())
 
     stale = set()
+    kept_module_buffers = set()
     for param_name, full_tensor in params.items():
         model_tensor = model_sd.get(param_name)
         if model_tensor is None or model_tensor.shape == full_tensor.shape:
@@ -198,41 +305,67 @@ def _geometry_buffers_to_rebuild(model, params) -> set[str]:
 
         parent = param_name.rsplit(".", 1)[0]
         parent_module = modules.get(parent)
-        parent_has_params = parent_module is not None and any(
-            True for _ in parent_module.parameters()
-        )
-        assert param_name in buffer_names and not parent_has_params, (
+        assert param_name in buffer_names, (
             f"Shape mismatch for {param_name}: checkpoint has {tuple(full_tensor.shape)}, "
-            f"model expects {tuple(model_tensor.shape)}. Rebuilding it would "
-            f"re-initialise '{parent}' and discard its learned weights; make the "
-            "config's grid geometry match the checkpoint instead."
+            f"model expects {tuple(model_tensor.shape)}. It is a learned weight, not grid "
+            "geometry, so rebuilding it would discard training; make the config's grid "
+            "geometry match the checkpoint instead."
         )
+        assert parent_module is not None and hasattr(parent_module, "reset_parameters"), (
+            f"Geometry buffer {param_name} changed shape but '{parent}' has no "
+            "reset_parameters to rebuild it from the current grid."
+        )
+        if next(parent_module.parameters(), None) is not None:
+            kept_module_buffers.add(param_name)
         logger.warning(
             f"Rebuilding geometry buffer {param_name} from the current grid: checkpoint "
             f"{tuple(full_tensor.shape)}, model {tuple(model_tensor.shape)}."
         )
         stale.add(param_name)
 
-    return stale
+    return stale, kept_module_buffers
 
 
-def _reinit_missing_modules(model, missing_keys, to_empty: bool) -> None:
+def _reinit_missing_modules(
+    model, missing_keys, to_empty: bool, kept_module_buffers=frozenset()
+) -> None:
     """Initialize the modules owning ``missing_keys``.
 
     These are new network parts (e.g. for fine-tuning) plus the geometry buffers dropped by
     _geometry_buffers_to_rebuild.
+
+    ``kept_module_buffers`` are dropped buffers whose module kept its weights from the checkpoint.
+    That module's own reset_parameters refills them (by convention it does not touch weights); the
+    full re-initialisation below would discard those weights. On the sharded path such buffers are
+    still on the meta device, since load_state_dict only gave storage to the keys it was passed.
     """
 
     if not missing_keys:
         return
 
+    all_modules = dict(model.named_modules())
+    missing = set(missing_keys)
+    rebuilt = missing & set(kept_module_buffers)
+    to_refill = defaultdict(set)
+    for key in rebuilt:
+        owner, name = key.rsplit(".", 1)
+        to_refill[owner].add(name)
+
+    # such a module must not also be missing one of its own tensors: initialising it would take
+    # the wholesale path below and discard what was just loaded
+    conflicts = {key for key in missing - rebuilt if key.rsplit(".", 1)[0] in to_refill}
+    assert not conflicts, (
+        f"{sorted(conflicts)} are missing from the checkpoint, but their module was kept for the "
+        "weights it did provide, so re-initialising it would discard them. The checkpoint and "
+        "this config disagree about more than grid geometry."
+    )
+
     # keep the highest-level roots only, so a subtree is initialized once
     roots = set()
-    for path in sorted({key.rsplit(".", 1)[0] for key in missing_keys}):
+    for path in sorted({key.rsplit(".", 1)[0] for key in missing - rebuilt}):
         if not any(path.startswith(root + ".") for root in roots):
             roots.add(path)
 
-    all_modules = dict(model.named_modules())
     for path in sorted(roots):
         if is_root():
             logger.info(f"Initializing module not found in checkpoint: {path}")
@@ -243,6 +376,16 @@ def _reinit_missing_modules(model, missing_keys, to_empty: bool) -> None:
             module.reset_parameters()
         elif hasattr(module, "reset_parameters"):
             module.reset_parameters()
+
+    for path, names in sorted(to_refill.items()):
+        module = all_modules[path]
+        for name in sorted(names):
+            buffer = module.get_buffer(name)
+            if buffer.is_meta:
+                module.register_buffer(name, torch.empty_like(buffer, device="cuda"))
+        if is_root():
+            logger.info(f"Rebuilding geometry buffers of module kept from checkpoint: {path}")
+        module.reset_parameters()
 
 
 def load_model(cf, model, device, run_id: str, mini_epoch=-1):
@@ -262,10 +405,12 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
         path_run / filename, map_location=torch.device("cpu"), mmap=True, weights_only=True
     )
 
+    params = _remap_encoder_levels(cf, model, params)
+
     is_model_sharded = cf.with_ddp and cf.with_fsdp
     if is_model_sharded:
         meta_sharded_sd = model.state_dict()
-        stale_buffers = _geometry_buffers_to_rebuild(model, params)
+        stale_buffers, kept_module_buffers = _geometry_buffers_to_rebuild(model, params)
         maybe_sharded_sd = {}
         for param_name, full_tensor in params.items():
             sharded_meta_param = meta_sharded_sd.get(param_name)
@@ -287,7 +432,9 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
         mkeys, ukeys = model.load_state_dict(maybe_sharded_sd, strict=False, assign=True)
 
         # new network parts (e.g. for fine-tuning) and the geometry buffers dropped above
-        _reinit_missing_modules(model, mkeys, to_empty=True)
+        _reinit_missing_modules(
+            model, mkeys, to_empty=True, kept_module_buffers=kept_module_buffers
+        )
 
     else:
         # fix mismatch between state_dict keys that can occur between interactive/non-interactive
@@ -305,13 +452,15 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
             for k in params.keys():
                 params_temp[k.replace("module.", "")] = params[k]
             params = params_temp
-        stale_buffers = _geometry_buffers_to_rebuild(model, params)
+        stale_buffers, kept_module_buffers = _geometry_buffers_to_rebuild(model, params)
         params = {k: v for k, v in params.items() if k not in stale_buffers}
         # load checkpoint
         mkeys, ukeys = model.load_state_dict(params, strict=False)
         model = model.to(device)
 
-        _reinit_missing_modules(model, mkeys, to_empty=False)
+        _reinit_missing_modules(
+            model, mkeys, to_empty=False, kept_module_buffers=kept_module_buffers
+        )
 
     # warn about difference in checkpoint and model
     if len(mkeys) == 0 and len(ukeys) == 0:
