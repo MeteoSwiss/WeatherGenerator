@@ -226,12 +226,12 @@ class DiffusionForecastEngine(torch.nn.Module):
             f"(got '{self.cond_noise_norm_scope}')"
         )
         # How the perturbation is applied along the denoising trajectory:
+        #   "fixed" (default) one draw per forecast step, held constant through the whole
+        #           ODE -- the member keeps a persistent perturbed state to forecast from.
         #   "cads"  CADS (Sadat et al., ICLR 2024, arXiv:2310.17347): re-corrupted at every
         #           denoising step under the gamma(t) schedule below, so the conditioning is
         #           destroyed at high sigma and fully restored by the end of the ODE.
-        #   "fixed" one draw per forecast step, held constant through the whole ODE -- the
-        #           member keeps a persistent perturbed state to forecast from.
-        self.cond_noise_schedule = self.cf.get("diffusion_conditioning_noise_schedule", "cads")
+        self.cond_noise_schedule = self.cf.get("diffusion_conditioning_noise_schedule", "fixed")
         assert self.cond_noise_schedule in {"cads", "fixed"}, (
             f"diffusion_conditioning_noise_schedule must be 'cads' or 'fixed' "
             f"(got '{self.cond_noise_schedule}')"
