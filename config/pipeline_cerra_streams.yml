@@ -1,0 +1,46 @@
+# 4 independent training runs, one per CERRA output variant (same 72 input channels).
+# parallelize: true -> the 4 streams have no data dependency, so all 4 chains are eligible
+# to run concurrently. Within a stream, chain_jobs: 4 submits 4 back-to-back jobs on the
+# same run_id (job 1 = fresh train, jobs 2-4 = train_continue from the latest checkpoint),
+# each with --dependency=afterany:<previous job>, to cover training beyond one wall-time limit.
+#
+# Launch from the WeatherGenerator directory:
+#   ../WeatherGenerator-private/hpc/launch-slurm.py --pipeline config/pipeline_cerra_streams.yml [sbatch args]
+#
+# Extra sbatch args (e.g. --time=12:00:00) apply to every stage; per-stage overrides go in slurm_args.
+
+parallelize: true
+
+stages:
+  - name: cerrar850
+    stage: train
+    config_files:
+      - config/forecasting_cerra_3h.yml
+    options:
+      - streams_directory=./config/streams/cerra_r850/
+    chain_jobs: 4
+
+  - name: cerraz500
+    stage: train
+    config_files:
+      - config/forecasting_cerra_3h.yml
+    options:
+      - streams_directory=./config/streams/cerra_z500/
+    chain_jobs: 4
+
+  - name: cerrar850z500
+    stage: train
+    config_files:
+      - config/forecasting_cerra_3h.yml
+    options:
+      - streams_directory=./config/streams/cerra_r850_z500/
+    chain_jobs: 4
+
+  - name: cerra2dec
+    stage: train
+    config_files:
+      - config/forecasting_cerra_3h.yml
+    options:
+      - streams_directory=./config/streams/cerra_2dec_r850_z500/
+    chain_jobs: 4
+
