@@ -7,18 +7,19 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-embed_unembed_mode: "full" #"block"
+embed_orientation: "channels"
+embed_unembed_mode: "full"
 embed_dropout_rate: 0.1
 
-ae_local_dim_embed: 1536
-ae_local_num_blocks: 4
+ae_local_dim_embed: 2048
+ae_local_num_blocks: 0
 ae_local_num_heads: 16
 ae_local_dropout_rate: 0.1
 ae_local_with_qk_lnorm: True
 
 ae_local_num_queries: 1
 ae_local_queries_per_cell: False
-ae_adapter_num_heads: 20
+ae_adapter_num_heads: 16
 ae_adapter_embed: 128
 ae_adapter_with_qk_lnorm: True
 ae_adapter_with_residual: True
@@ -36,13 +37,14 @@ ae_global_block_factor: 64
 ae_global_mlp_hidden_factor: 2
 ae_global_trailing_layer_norm: False
 
-ae_aggregation_num_blocks: 4
+ae_aggregation_num_blocks: 0
 ae_aggregation_num_heads: 32
 ae_aggregation_dropout_rate: 0.1
 ae_aggregation_with_qk_lnorm: True
 ae_aggregation_att_dense_rate: 1.0
 ae_aggregation_block_factor: 64
 ae_aggregation_mlp_hidden_factor: 2
+ae_local_max_tokens_per_cell: 256
 
 decoder_type: PerceiverIOCoordConditioning #  Main options PerceiverIOCoordConditioning or Linear
 pred_adapter_kv: False
@@ -89,7 +91,12 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/era5_georing_avhrr/"
+# Output variants (same 72 input channels; select via --options streams_directory=...):
+#   ./config/streams/cerra_r850/            single decoder, r_850
+#   ./config/streams/cerra_z500/            single decoder, z_500
+#   ./config/streams/cerra_r850_z500/       single decoder, r_850 + z_500
+#   ./config/streams/cerra_2dec_r850_z500/  two decoders, r_850 and z_500
+streams_directory: "./config/streams/cerra_r850/"
 streams: ???
 
 # type of zarr_store
@@ -103,7 +110,7 @@ general:
   world_size: ???
 
   # local_rank, 
-  # with_ddp,
+  with_ddp: True
   # data_path_*, 
   # model_path, 
   # run_path, 
@@ -119,7 +126,7 @@ general:
 train_logging:
   terminal: 10
   metrics: 20
-  checkpoint: 250
+  checkpoint: 250 #250
 
 # parameters for data loading
 data_loading :
@@ -135,15 +142,15 @@ training_config:
   # training_mode: "masking", "student_teacher", "latent_loss"
   training_mode: ["masking"]
 
-  num_mini_epochs: 16
+  num_mini_epochs: 128
   samples_per_mini_epoch: 4096
   shuffle: True
 
-  start_date: 2014-01-01T00:00
+  start_date: 1985-01-01T00:00
   end_date: 2022-12-31T00:00
 
-  time_window_step: 01:00:00
-  time_window_len: 06:00:00
+  time_window_step: 03:00:00
+  time_window_len: 03:00:00
   
   learning_rate_scheduling :
     lr_start: 1e-6
@@ -175,21 +182,16 @@ training_config:
     }
   
   model_input: {
-    "source_masking" : {
+    "forecasting" : {
       # masking strategy: "random", "healpix", "forecast"
-      masking_strategy: "healpix",
-      masking_strategy_config : { 
-        rate : 0.7,
-        hl_mask: 2, 
-        rate_sampling: False
+      masking_strategy: "forecast",
       },
-    },
-  }
+    }
 
   forecast :
-      time_step: 06:00:00
-      offset: 0
-      num_steps: 0
+      time_step: 03:00:00
+      offset: 1
+      num_steps: 1
       policy: "fixed"
 
 
@@ -201,10 +203,7 @@ validation_config:
 
   start_date: 2023-10-01T00:00
   end_date: 2023-12-31T00:00
-
-  time_window_step: 06:00:00
-  time_window_len: 06:00:00
-
+  
   # whether to track the exponential moving average of weights for validation
   validate_with_ema: 
     enabled : True
