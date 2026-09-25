@@ -1,0 +1,21 @@
+# Fresh joint r_850/z_500 training, matching mmfsjhph's 1-node/4-GPU chained allocation.
+# Launch from WeatherGenerator with a clean uenv environment, as verified by the GPU smoke run:
+# env -u UENV_MOUNT_LIST -u UENV_VIEW -u UENV_LABEL -u UENV_REPO \
+#   -u UENV_TELEMETRY -u UENV_WARN_MIGRATE \
+#   ../WeatherGenerator-private/hpc/launch-slurm.py \
+#   --pipeline config/pipeline_cerra_forecast_fourier_mlp.yml --no-register
+parallelize: false
+stages:
+  - name: cerraFcFourier
+    stage: train
+    base_config: config/config_forecasting.yml
+    config_files:
+      - config/forecasting_cerra_fourier_mlp.yml
+    nodes: 1
+    chain_jobs: 4
+    slurm_args:
+      - --partition=normal
+      - --ntasks=4
+      - --ntasks-per-node=4
+      - --gres=gpu:4
+      - --time=24:00:00

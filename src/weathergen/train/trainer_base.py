@@ -27,9 +27,12 @@ class TrainerBase:
         self.cf: Config | None = None
 
     @staticmethod
-    def init_torch(use_cuda=True, num_accs_per_task=1, multiprocessing_method="fork"):
+    def init_torch(
+        use_cuda=True, num_accs_per_task=1, multiprocessing_method="fork", *, allow_tf32=True
+    ):
         """
         Initialize torch, set device and multiprocessing method.
+        Set allow_tf32=False when float32 matrix multiplication is required.
 
         NOTE: If using the Nvidia profiler,
         the multiprocessing method must be set to "spawn".
@@ -43,7 +46,7 @@ class TrainerBase:
         # This may cause issues with logging. Alternative: "fork"
         torch.multiprocessing.set_start_method(multiprocessing_method, force=True)
 
-        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
 
         use_cuda = torch.cuda.is_available()
         if not use_cuda:

@@ -1,0 +1,5 @@
+# Literal absolute-coordinate slots from be6df186859c6c20f7af3aaa0af860b5dee9c711.
+streams_directory: ./config/streams/cerra_ae_linear/
+decoder_absolute_coords: true
+wgtags:
+  exp: cerra_ae_basic_absolute_branch

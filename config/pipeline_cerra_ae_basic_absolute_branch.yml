@@ -1,0 +1,21 @@
+parallelize: false
+stages:
+  - name: cerraAbsBranch
+    stage: train
+    run_id: caea0017
+    config_files:
+      - config/cerra_autoencoding.yml
+      - config/cerra_ae_basic_absolute_branch.yml
+    nodes: 1
+    chain_jobs: 1
+    cleanup_scripts: false
+    slurm_args:
+      - --ntasks=1
+      - --ntasks-per-node=1
+      - --cpus-per-task=8
+      - --gres=gpu:1
+      - --mem=64G
+      - --exclusive=user
+      - --partition=debug
+      - --time=00:30:00
+      - --uenv-passthrough=ignore

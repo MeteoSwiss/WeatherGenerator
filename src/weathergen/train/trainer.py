@@ -729,6 +729,10 @@ class Trainer(TrainerBase):
             # save config
             config.save(self.cf, mini_epoch)
 
+        # Keep peers alive until rank zero finishes gathering and writing the checkpoint.
+        if self.cf.with_ddp:
+            torch.distributed.barrier()
+
     def _log(self, stage: Stage):
         """
         Logs training or validation metrics.

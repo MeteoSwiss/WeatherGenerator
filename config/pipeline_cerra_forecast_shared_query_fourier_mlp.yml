@@ -1,0 +1,20 @@
+# Matched to pipeline_cerra_forecast_fourier_mlp.yml; only query sharing changes.
+# Use the same clean-UENV launch command documented in that pipeline.
+parallelize: false
+stages:
+  - name: cerraFcShared
+    stage: train
+    base_config: config/config_forecasting.yml
+    config_files:
+      - config/forecasting_cerra_fourier_mlp.yml
+    options:
+      - ae_local_queries_per_cell=false
+      - wgtags.query_layout=shared
+    nodes: 1
+    chain_jobs: 4
+    slurm_args:
+      - --partition=normal
+      - --ntasks=4
+      - --ntasks-per-node=4
+      - --gres=gpu:4
+      - --time=24:00:00

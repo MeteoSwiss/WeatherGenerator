@@ -37,7 +37,9 @@ class SelfAttentionBlock(nn.Module):
             **kwargs["attention_kwargs"],
         )
         if self.with_adanorm:
-            self.mhsa_block = AdaLayerNormLayer(dim, dim_aux, self.mhsa, dropout_rate)
+            self.mhsa_block = AdaLayerNormLayer(
+                dim, dim_aux, self.mhsa, norm_eps=kwargs["attention_kwargs"]["norm_eps"]
+            )
         else:
             self.ln_sa = nn.LayerNorm(dim, eps=kwargs["attention_kwargs"]["norm_eps"])
             self.mhsa_block = lambda x, _, **kwargs: self.mhsa(self.ln_sa(x), **kwargs) + x
@@ -53,21 +55,21 @@ class SelfAttentionBlock(nn.Module):
         )
         if self.with_adanorm:
             self.mlp_fn = lambda x, **kwargs: self.mlp(x)
-            self.mlp_block = AdaLayerNormLayer(dim, dim_aux, self.mlp_fn, dropout_rate)
+            self.mlp_block = AdaLayerNormLayer(
+                dim, dim_aux, self.mlp_fn, norm_eps=kwargs["attention_kwargs"]["norm_eps"]
+            )
         else:
             self.ln_mlp = nn.LayerNorm(norm_eps=kwargs["attention_kwargs"]["norm_eps"])
             self.mlp_block = lambda x, _, **kwargs: self.mlp(self.ln_mlp(x), None, **kwargs) + x
 
         self.initialise_weights()
-        if self.with_adanorm:
-            # Has to happen after the basic weight init to ensure it is zero!
-            self.mhsa_block.initialise_weights()
-            self.mlp_block.initialise_weights()
 
     def initialise_weights(self):
         # Initialise transformer layers:
         def _basic_init(module):
-            if isinstance(module, nn.Linear):
+            if isinstance(module, AdaLayerNormLayer):
+                module.initialise_weights()
+            elif isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
@@ -114,7 +116,9 @@ class CrossAttentionBlock(nn.Module):
                 **kwargs["attention_kwargs"],
             )
             if self.with_adanorm:
-                self.mhsa_block = AdaLayerNormLayer(dim_q, dim_aux, self.mhsa, dropout_rate)
+                self.mhsa_block = AdaLayerNormLayer(
+                    dim_q, dim_aux, self.mhsa, norm_eps=kwargs["attention_kwargs"]["norm_eps"]
+                )
             else:
                 self.ln_sa = nn.LayerNorm(dim_q, eps=kwargs["attention_kwargs"]["norm_eps"])
                 self.mhsa_block = lambda x, _, **kwargs: self.mhsa(self.ln_sa(x), **kwargs) + x
@@ -127,7 +131,9 @@ class CrossAttentionBlock(nn.Module):
             **kwargs["attention_kwargs"],
         )
         if self.with_adanorm:
-            self.cross_attn_block = AdaLayerNormLayer(dim_q, dim_aux, self.cross_attn, dropout_rate)
+            self.cross_attn_block = AdaLayerNormLayer(
+                dim_q, dim_aux, self.cross_attn, norm_eps=kwargs["attention_kwargs"]["norm_eps"]
+            )
         else:
             self.ln_ca = nn.LayerNorm(dim_q, eps=kwargs["attention_kwargs"]["norm_eps"])
             self.cross_attn_block = (
@@ -145,7 +151,9 @@ class CrossAttentionBlock(nn.Module):
             )
             if self.with_adanorm:
                 self.mlp_fn = lambda x, **kwargs: self.mlp(x)
-                self.mlp_block = AdaLayerNormLayer(dim_q, dim_aux, self.mlp_fn, dropout_rate)
+                self.mlp_block = AdaLayerNormLayer(
+                    dim_q, dim_aux, self.mlp_fn, norm_eps=kwargs["attention_kwargs"]["norm_eps"]
+                )
             else:
                 self.ln_mlp = nn.LayerNorm(dim_q, eps=kwargs["attention_kwargs"]["norm_eps"])
                 self.mlp_block = lambda x, _, **kwargs: self.mlp(self.ln_mlp(x)) + x
@@ -153,16 +161,13 @@ class CrossAttentionBlock(nn.Module):
             self.mlp_block = lambda x, _, **kwargs: x
 
         self.initialise_weights()
-        if self.with_adanorm:
-            # Has to happen after the basic weight init to ensure it is zero!
-            self.mhsa_block.initialise_weights()
-            self.cross_attn_block.initialise_weights()
-            self.mlp_block.initialise_weights()
 
     def initialise_weights(self):
         # Initialise transformer layers:
         def _basic_init(module):
-            if isinstance(module, nn.Linear):
+            if isinstance(module, AdaLayerNormLayer):
+                module.initialise_weights()
+            elif isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)

@@ -8,7 +8,6 @@
 # nor does it submit to any jurisdiction.
 
 import dataclasses
-import math
 
 import torch
 import torch.nn as nn
@@ -1118,17 +1117,15 @@ class LatentPredictionHeadMLP(nn.Module):
 class EfficientBilinear(torch.nn.Module):
     def __init__(self, in_dim_lhs, in_dim_rhs, out, bias=False):
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(out, in_dim_lhs, in_dim_rhs))
-        self.bias = nn.Parameter(torch.zeros(out)) if bias else 0.0
-        self.total_in = in_dim_lhs * in_dim_rhs
+        self.weight = nn.Parameter(torch.empty(out, in_dim_lhs, in_dim_rhs))
+        self.bias = nn.Parameter(torch.empty(out)) if bias else 0.0
+        self.reset_parameters()
 
     def forward(self, x_lhs, x_rhs):
         return torch.einsum("bi,oij,bj->bo", x_lhs, self.weight, x_rhs) + self.bias
 
     def reset_parameters(self):
-        if isinstance(self.weight, nn.Parameter):
-            bound = math.sqrt(2.0 / self.total_in)
-            nn.init.uniform_(self.weight, -bound, bound)
+        nn.init.normal_(self.weight)
         if isinstance(self.bias, nn.Parameter):
             nn.init.zeros_(self.bias)
 

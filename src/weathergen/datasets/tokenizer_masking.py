@@ -40,9 +40,20 @@ def readerdata_to_torch(rdata: IOReaderData) -> IOReaderData:
 
 
 class TokenizerMasking(Tokenizer):
-    def __init__(self, healpix_level: int, masker: Masker):
+    def __init__(
+        self,
+        healpix_level: int,
+        masker: Masker,
+        *,
+        global_coords: bool = False,
+        decoder_absolute_coords: bool = False,
+    ):
         super().__init__(healpix_level)
         self.masker = masker
+        self.global_coords = global_coords
+        self.decoder_absolute_coords = decoder_absolute_coords
+        if self.global_coords and decoder_absolute_coords:
+            raise ValueError("Local absolute-coordinate replacement cannot use global coordinates")
         self.rng = None
         self.token_size = None
 
@@ -179,6 +190,12 @@ class TokenizerMasking(Tokenizer):
             self.hpy_verts_local_target,
             self.hpy_nctrs_target,
             encode_times_target,
+            global_coords=self.global_coords,
+            decoder_absolute_coords=self.decoder_absolute_coords,
+            fourier_frequencies=stream_info.get("embed_target_coords", {}).get(
+                "fourier_frequencies", ()
+            ),
+            fourier_enabled=stream_info.get("embed_target_coords", {}).get("fourier_enabled", True),
         )
 
         return (coords_local, coords_per_cell)
@@ -211,6 +228,7 @@ class TokenizerMasking(Tokenizer):
             self.hpy_verts_local_target,
             self.hpy_nctrs_target,
             encode_times_target,
+            global_coords=self.global_coords,
         )
 
         idxs_ord_inv = None

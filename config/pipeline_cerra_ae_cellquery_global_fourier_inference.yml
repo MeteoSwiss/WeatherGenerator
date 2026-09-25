@@ -1,0 +1,19 @@
+parallelize: false
+stages:
+  - name: cerraPcGlobEval
+    stage: inference
+    run_id: caei0020
+    from_run_id: caea0020
+    mini_epoch: 10
+    nodes: 1
+    cleanup_scripts: false
+    slurm_args:
+      - --ntasks=1
+      - --ntasks-per-node=1
+      - --cpus-per-task=8
+      - --gres=gpu:1
+      - --mem=64G
+      - --exclusive=user
+      - --partition=debug
+      - --time=00:10:00
+      - --uenv-passthrough=ignore

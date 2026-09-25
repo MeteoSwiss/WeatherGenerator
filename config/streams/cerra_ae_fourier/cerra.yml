@@ -1,0 +1,35 @@
+CERRA:
+  type: anemoi
+  anemoi_config:
+    dataset: cerra-rr-an-oper-se-al-ec-mars-5p5km-1985-2023-3h-v2
+    trim_edge: [267, 268, 267, 268]
+  stream_id: 0
+  frequency: "03:00:00"
+  source: [r_850, z_500]
+  target: [r_850, z_500]
+  geoinfo_channels: []
+  loss_weight: 1.0
+  token_size: 32
+  max_num_targets: -1
+  shuffle_source: false
+  shuffle_target: false
+  embed:
+    net: linear
+    num_tokens: 1
+    num_heads: 4
+    dim_embed: 128
+    num_blocks: 0
+  embed_target_coords:
+    net: mlp
+    dim_embed: 128
+    hidden_factor: 8
+    # Radians per unit-sphere XYZ component: 16 * 2**(k/2), k=0..15.
+    # 9 global features + 3 axes * 16 frequencies * sin/cos = 105 inputs.
+    fourier_frequencies: [16.0, 22.627416997969522, 32.0, 45.254833995939045, 64.0, 90.50966799187809, 128.0, 181.01933598375618, 256.0, 362.03867196751236, 512.0, 724.0773439350247, 1024.0, 1448.1546878700494, 2048.0, 2896.309375740099]
+  target_readout:
+    type: obs_value
+    num_layers: 1
+    num_heads: 4
+  pred_head:
+    ens_size: 1
+    num_layers: 1

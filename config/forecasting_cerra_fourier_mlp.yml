@@ -1,0 +1,38 @@
+# Apply over config/config_forecasting.yml.
+# Reproduce rradev/cerra_decode_split's joint run mmfsjhph, changing only the decoder/query setup.
+embed_orientation: channels
+embed_unembed_mode: full
+ae_local_max_tokens_per_cell: 256
+
+# Separate learned queries per cell, still one latent per cell (ae_local_num_queries: 1).
+ae_local_queries_per_cell: true
+decoder_type: Linear  # Native hard-cell bilinear readout; the coordinate network is an MLP.
+decoder_global_coords: true
+pred_self_attention: false
+pred_mlp_adaln: false
+streams_directory: ./config/streams/cerra_forecast_fourier_mlp/
+
+# Defaults inherited by the original run from default_config.yml.
+qk_norm_type: null
+general:
+  with_ddp: true
+train_logging:
+  log_grad_norms: false
+data_loading:
+  memory_pinning: true
+
+training_config:
+  num_mini_epochs: 128
+  start_date: 1985-01-01T00:00
+  time_window_step: "03:00:00"
+  time_window_len: "03:00:00"
+  forecast:
+    time_step: "03:00:00"
+    num_steps: 1
+
+validation_config:
+  validate_with_ema:
+    ema_halflife_in_thousands: 1e-3
+
+wgtags:
+  exp: cerra_fc_fourier_mlp

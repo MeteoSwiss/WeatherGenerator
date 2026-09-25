@@ -616,32 +616,24 @@ class TestFrozenTeacher:
 
 
 class TestEMAModelBeta:
-    def test_get_current_beta(self):
+    def test_checkpoint_preserves_learned_queries_with_sample_weighted_ema(self):
+        from copy import deepcopy
+
         from weathergen.model.ema import EMAModel
 
         model = nn.Module()
-        model.p = nn.Parameter(torch.randn(3))
-        empty = nn.Module()
-        empty.p = nn.Parameter(torch.randn(3))
-
+        model.encoder = nn.Module()
+        model.encoder.q_cells = nn.Parameter(torch.zeros(2, 1, 3))
         ema = EMAModel.__new__(EMAModel)
-        ema.halflife_steps = 1e-3
-        ema.rampup_ratio = 0.09
+        ema.ema_model = deepcopy(model)
+        ema.src_params = dict(model.named_parameters())
+        ema.is_model_sharded = False
+        ema.halflife_steps = 4
+        ema.rampup_ratio = None
 
-        beta = ema.get_current_beta(100, 32)
-        assert 0.0 < beta < 1.0
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.5)
+        (model.encoder.q_cells - 2).square().sum().backward()
+        optimizer.step()
+        ema.update(cur_step=32, batch_size=4)
 
-    def test_batch_size_stored_on_update(self):
-        """Verify that update() stores batch_size."""
-        from weathergen.model.ema import EMAModel
-
-        model = nn.Module()
-        model.p = nn.Parameter(torch.randn(3))
-        empty = nn.Module()
-        empty.p = nn.Parameter(torch.randn(3))
-
-        ema = EMAModel(model, empty)
-        assert ema.batch_size == 1
-
-        ema.update(cur_step=10, batch_size=64)
-        assert ema.batch_size == 64
+        torch.testing.assert_close(ema.state_dict()["encoder.q_cells"], torch.ones(2, 1, 3))

@@ -818,16 +818,20 @@ def psd_plot_metric_region(
     scores_dict: dict,
     plotter: object,
 ) -> None:
-    """Create PSD plots for all streams and channels for a given metric and region.
+    """Create one PSD plot per channel and forecast step, overlaying all runs.
 
     PSD curves (frequencies, target PSD, prediction PSD) are stored in
-    ``score.attrs`` by ``Scores.calc_psd`` and read back here.
+    ``score.attrs`` by ``Scores.calc_psd`` and read back here. Runs are grouped by
+    channel across streams, so runs whose streams are named differently but carry
+    the same channel end up on the same axes.
     """
     streams_set = collect_streams(runs)
     channels_set = collect_channels(scores_dict, metric, region, runs)
 
-    for stream in streams_set:
-        for ch in channels_set:
+    for ch in channels_set:
+        # fstep -> (psd_datasets, labels, run_ids)
+        per_fstep: dict[int, tuple[list[dict], list[str], list[str]]] = {}
+        for stream in streams_set:
             for run_id, data in scores_dict[metric][region].get(stream, {}).items():
                 if ch not in np.atleast_1d(data.channel.values):
                     continue
@@ -842,25 +846,29 @@ def psd_plot_metric_region(
                     continue
 
                 label = runs[run_id].get("label", run_id)
-
                 for fstep in attr_fsteps:
                     psd_datasets = _extract_psd_attrs(data_ch, fstep, ch)
                     if psd_datasets is None:
                         continue
+                    dsets, labels, ids = per_fstep.setdefault(fstep, ([], [], []))
+                    dsets.extend(psd_datasets)
+                    labels.append(label)
+                    ids.append(run_id)
 
-                    method_tag = psd_datasets[0].get("psd_method", "sht")
-                    name = create_filename(
-                        prefix=[metric, method_tag, region],
-                        middle=[run_id],
-                        suffix=[stream, ch, f"fstep{fstep}"],
-                    )
-                    plotter.psd_plot(
-                        psd_datasets,
-                        [label],
-                        tag=name,
-                        variable=ch,
-                        forecast_step=str(fstep),
-                    )
+        for fstep, (dsets, labels, ids) in per_fstep.items():
+            method_tag = dsets[0].get("psd_method", "sht")
+            name = create_filename(
+                prefix=[metric, method_tag, region],
+                middle=ids,
+                suffix=[ch, f"fstep{fstep}"],
+            )
+            plotter.psd_plot(
+                dsets,
+                labels,
+                tag=name,
+                variable=ch,
+                forecast_step=str(fstep),
+            )
     _logger.info(f"PSD plots saved successfully into: {plotter.out_plot_dir_psd}")
 
 

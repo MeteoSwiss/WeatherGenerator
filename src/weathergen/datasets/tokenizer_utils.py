@@ -320,6 +320,11 @@ def tokenize_apply_mask_target(
     hpy_verts_local,
     hpy_nctrs,
     enc_time,
+    *,
+    global_coords=False,
+    fourier_frequencies=(),
+    fourier_enabled=True,
+    decoder_absolute_coords=False,
 ):
     """
     Apply masking to the data.
@@ -329,14 +334,32 @@ def tokenize_apply_mask_target(
     specified in idxs_cells and mask_channels acts on the columns.
 
     """
+    num_frequencies = len(fourier_frequencies)
+    if num_frequencies:
+        if not global_coords:
+            raise ValueError("fourier_frequencies require owner-independent global coordinates")
+        frequencies = torch.as_tensor(fourier_frequencies, dtype=torch.float64)
+        if (
+            frequencies.ndim != 1
+            or not torch.isfinite(frequencies).all()
+            or (frequencies <= 0).any()
+        ):
+            raise ValueError("fourier_frequencies must be a sequence of finite positive values")
 
     def return_empty(rdata, idxs_cells_lens):
         do = torch.zeros([0, rdata.data.shape[-1]])
         coords = torch.zeros([0, rdata.coords.shape[-1]])
         dt = np.array([], dtype=np.datetime64)
         masked_points_per_cell = torch.zeros(len(idxs_cells_lens), dtype=torch.int32)
-        # data, datetimes, coords, coords_local, masked_points_per_cell
-        return do, dt, coords, coords, masked_points_per_cell
+        features = (
+            torch.zeros(
+                [0, rdata.geoinfos.shape[-1] + 9 + 6 * num_frequencies], dtype=torch.float32
+            )
+            if global_coords
+            else coords
+        )
+        # data, datetimes, coords, target features, masked_points_per_cell
+        return do, dt, coords, features, masked_points_per_cell
 
     # convert to token level, forgetting about cells
     idxs_tokens = [i for t in idxs_cells for i in t]
@@ -375,7 +398,27 @@ def tokenize_apply_mask_target(
     ).to(dtype=torch.int32)
 
     # compute encoding of target coordinates used in prediction network
-    if torch.tensor(idxs_lens).sum() > 0:
+    if global_coords:
+        geoinfo_end = 6 + geoinfos.shape[1]
+        coords_local = torch.empty(
+            (coords.shape[0], geoinfo_end + 3 + 6 * num_frequencies), dtype=torch.float32
+        )
+        coords_local[:, 0] = stream_id
+        coords_local[:, 1:6] = datetimes_enc
+        coords_local[:, 6:geoinfo_end] = geoinfos
+        # Evaluate high-frequency phases in float64 before storing float32 features.
+        xyz = s2tor3(*theta_phi_to_standard_coords(coords.double() if num_frequencies else coords))
+        coords_local[:, -3:] = xyz
+        if num_frequencies:
+            fourier = coords_local[:, geoinfo_end:-3].unflatten(1, (3, num_frequencies, 2))
+            if fourier_enabled:
+                phases = xyz.unsqueeze(-1) * frequencies
+                torch.sin(phases, out=fourier[..., 0])
+                torch.cos(phases, out=fourier[..., 1])
+            else:
+                # Preserve input width for controlled feature ablations.
+                fourier.zero_()
+    elif torch.tensor(idxs_lens).sum() > 0:
         coords_local = get_target_coords_local(
             stream_id,
             hl,
@@ -386,6 +429,7 @@ def tokenize_apply_mask_target(
             hpy_verts_rots,
             hpy_verts_local,
             hpy_nctrs,
+            decoder_absolute_coords=decoder_absolute_coords,
         )
         coords_local.requires_grad = False
     else:
@@ -428,6 +472,7 @@ def get_target_coords_local(
     verts_rots,
     verts_local,
     nctrs,
+    decoder_absolute_coords: bool = False,
 ):
     """Generate local coordinates for target coords w.r.t healpix cell vertices and
     and for healpix cell vertices themselves
@@ -520,5 +565,12 @@ def get_target_coords_local(
     # remaining geoinfos (zenith angle etc)
     zi = 99
     a[..., (geoinfo_offset + zi) :] = target_coords[..., (geoinfo_offset + 2) :]
+
+    if decoder_absolute_coords:
+        # Match be6df186: fixed slots and trig applied to the stored degree values.
+        a[..., 98] = np.sin(coords[:, 0])
+        a[..., 97] = np.cos(coords[:, 0])
+        a[..., 96] = np.sin(coords[:, 1])
+        a[..., 95] = np.cos(coords[:, 1])
 
     return a

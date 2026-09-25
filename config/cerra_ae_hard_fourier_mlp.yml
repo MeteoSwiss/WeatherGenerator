@@ -1,0 +1,4 @@
+# Experiment 24 with experiment 14's coordinate MLP; hard cell readout is unchanged.
+streams_directory: ./config/streams/cerra_ae_fourier/
+wgtags:
+  exp: cerra_ae_hard_fourier_mlp

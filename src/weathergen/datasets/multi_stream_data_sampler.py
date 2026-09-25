@@ -108,7 +108,12 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         self.healpix_level = cf.healpix_level
         self.num_healpix_cells = 12 * 4**self.healpix_level
         self.masker = Masker(cf.healpix_level, stage, cf.streams, self.mode_cfg)
-        self.tokenizer = TokenizerMasking(cf.healpix_level, self.masker)
+        self.tokenizer = TokenizerMasking(
+            cf.healpix_level,
+            self.masker,
+            global_coords=cf.get("decoder_global_coords", False),
+            decoder_absolute_coords=cf.get("decoder_absolute_coords", False),
+        )
 
         forecast_cfg = FORECAST_DEFAULTS | OmegaConf.to_object(mode_cfg.get("forecast", {}))
         self.output_offset = forecast_cfg["offset"]
@@ -370,7 +375,12 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         # TODO: avoid hard coding magic values
         # +6 at the end for stream_id and time encoding
         return [
-            (ds.readers[0].get_geoinfo_size() + (5 * (3 * 5)) + 3 * 8) + 6
+            ds.readers[0].get_geoinfo_size()
+            + (
+                9 + 6 * len(ds.info.get("embed_target_coords", {}).get("fourier_frequencies", ()))
+                if self.tokenizer.global_coords
+                else (5 * (3 * 5)) + 3 * 8 + 6
+            )
             for ds in self.streams_datasets.values()
         ]
 
@@ -475,7 +485,13 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                     (time_win_target.start, time_win_target.end),
                     target_mask,
                 )
-                stream_data.add_target_coords(self._stage, timestep_idx, tc, tc_l, rdata.is_spoof)
+                stream_data.add_target_coords(
+                    self._stage,
+                    timestep_idx,
+                    tc,
+                    tc_l,
+                    rdata.is_spoof,
+                )
 
             if "target_values" in mode:
                 (tt_cells, tt_t, tt_c, idxs_inv) = self.tokenizer.get_target_values(

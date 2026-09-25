@@ -7,8 +7,10 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+import numpy as np
 import torch
 from astropy_healpix import healpy
+from torch.distributed.tensor import DTensor, distribute_tensor
 from torch.utils.checkpoint import checkpoint
 
 from weathergen.common.config import Config
@@ -85,37 +87,48 @@ class EncoderModule(torch.nn.Module):
             self.ae_local_global_engine = Local2GlobalAssimilationEngine(cf)
 
         # learnable queries
-        if cf.ae_local_queries_per_cell:
-            s = (self.num_healpix_cells, cf.ae_local_num_queries, cf.ae_global_dim_embed)
-            q_cells = torch.rand(s, requires_grad=True) / cf.ae_global_dim_embed
-            # add meta data
-            q_cells[:, :, -8:-6] = (
-                (torch.arange(self.num_healpix_cells) / self.num_healpix_cells)
-                .unsqueeze(1)
-                .unsqueeze(1)
-                .repeat((1, cf.ae_local_num_queries, 2))
-            )
-            theta, phi = healpy.pix2ang(
-                nside=2**self.healpix_level, ipix=torch.arange(self.num_healpix_cells)
-            )
-            q_cells[:, :, -6:-3] = (
-                torch.cos(theta).unsqueeze(1).unsqueeze(1).repeat((1, cf.ae_local_num_queries, 3))
-            )
-            q_cells[:, :, -3:] = (
-                torch.sin(phi).unsqueeze(1).unsqueeze(1).repeat((1, cf.ae_local_num_queries, 3))
-            )
-            q_cells[:, :, -9] = torch.arange(cf.ae_local_num_queries)
-            q_cells[:, :, -10] = torch.arange(cf.ae_local_num_queries)
-        else:
-            s = (1, cf.ae_local_num_queries, cf.ae_global_dim_embed)
-            q_cells = torch.rand(s, requires_grad=True) / cf.ae_global_dim_embed
-        self.q_cells = torch.nn.Parameter(q_cells, requires_grad=True)
+        num_query_cells = self.num_healpix_cells if cf.ae_local_queries_per_cell else 1
+        self.q_cells = torch.nn.Parameter(
+            torch.empty(num_query_cells, cf.ae_local_num_queries, cf.ae_global_dim_embed)
+        )
+        self.reset_parameters()
 
         # query aggregation engine
         self.ae_aggregation_engine = QueryAggregationEngine(cf, self.num_healpix_cells)
 
         # global assimilation engine
         self.ae_global_engine = GlobalAssimilationEngine(cf, self.num_healpix_cells)
+
+    @torch.no_grad()
+    def reset_parameters(self):
+        q_cells = self.q_cells
+        q_cells.uniform_(0, 1 / self.cf.ae_global_dim_embed)
+        if not self.cf.ae_local_queries_per_cell:
+            return
+
+        metadata = torch.empty(
+            self.num_healpix_cells,
+            self.cf.ae_local_num_queries,
+            10,
+            dtype=q_cells.dtype,
+            device=q_cells.device,
+        )
+        query_ids = torch.arange(
+            self.cf.ae_local_num_queries, dtype=q_cells.dtype, device=q_cells.device
+        )
+        metadata[:, :, :2] = query_ids[None, :, None]
+        cell_ids = torch.arange(self.num_healpix_cells, dtype=q_cells.dtype, device=q_cells.device)
+        metadata[:, :, 2:4] = (cell_ids / self.num_healpix_cells)[:, None, None]
+        theta, phi = healpy.pix2ang(
+            nside=2**self.healpix_level, ipix=np.arange(self.num_healpix_cells), nest=True
+        )
+        theta = torch.as_tensor(theta, dtype=q_cells.dtype, device=q_cells.device)
+        phi = torch.as_tensor(phi, dtype=q_cells.dtype, device=q_cells.device)
+        metadata[:, :, 4:7] = torch.cos(theta)[:, None, None]
+        metadata[:, :, 7:] = torch.sin(phi)[:, None, None]
+        if isinstance(q_cells, DTensor):
+            metadata = distribute_tensor(metadata, q_cells.device_mesh, q_cells.placements)
+        q_cells[:, :, -10:] = metadata
 
     def forward(self, model_params, batch):
         """
@@ -295,9 +308,9 @@ class EncoderModule(torch.nn.Module):
         # create register and latent tokens and prepend to latent spatial tokens
         num_extra_tokens = self.num_register_tokens + self.num_class_tokens
         pos_enc = positional_encoding_harmonic
-        tokens_global_register_class = pos_enc(self.q_cells.repeat(rs, num_extra_tokens, 1))
+        # Auxiliary tokens remain shared across cells, including with per-cell spatial queries.
+        tokens_global_register_class = pos_enc(self.q_cells[:1].repeat(rs, num_extra_tokens, 1))
 
-        # TODO: re-enable or remove ae_local_queries_per_cell
         if self.cf.ae_local_queries_per_cell:
             tokens_global = (self.q_cells + model_params.pe_global).repeat(rs, 1, 1)
         else:

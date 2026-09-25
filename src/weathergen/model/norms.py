@@ -102,6 +102,15 @@ class SwiGLU(nn.Module):
         return x2 * F.silu(x1)
 
 
+class _ZeroInitLinear(nn.Linear):
+    """Keep modulation neutral when model or checkpoint initialization resets this leaf."""
+
+    def reset_parameters(self):
+        nn.init.zeros_(self.weight)
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
+
+
 class AdaLayerNormLayer(torch.nn.Module):
     """
     AdaLayerNorm for embedding auxiliary information as done in DiT (Peebles & Xie) with zero
@@ -126,17 +135,15 @@ class AdaLayerNormLayer(torch.nn.Module):
         super().__init__()
 
         self.dim = dim
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim_aux, 3 * dim, bias=True))
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), _ZeroInitLinear(dim_aux, 3 * dim, bias=True)
+        )
 
         self.ln = nn.LayerNorm(dim, elementwise_affine=False, eps=norm_eps)
         self.layer = layer
 
-        # Initialize weights to zero for modulation and gating layers
-        self.initialise_weights()
-
     def initialise_weights(self):
-        nn.init.zeros_(self.adaLN_modulation[-1].weight)
-        nn.init.zeros_(self.adaLN_modulation[-1].bias)
+        self.adaLN_modulation[-1].reset_parameters()
 
     def forward(self, x: torch.Tensor, c: torch.Tensor, x_lens, **kwargs) -> torch.Tensor:
         # the -1 in torch.repeat_interleave(..) is because x_lens is designed for use with flash

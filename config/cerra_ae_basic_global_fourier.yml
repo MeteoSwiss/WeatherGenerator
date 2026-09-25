@@ -1,0 +1,5 @@
+# Existing global XYZ/Fourier features, without interpolation or per-cell queries.
+streams_directory: ./config/streams/cerra_ae_basic_global_fourier/
+decoder_global_coords: true
+wgtags:
+  exp: cerra_ae_basic_global_fourier

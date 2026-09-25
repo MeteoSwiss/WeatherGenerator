@@ -1,0 +1,50 @@
+# Same shared query, 105 -> 840 -> 128 coordinate MLP, crop, and 2560 updates.
+# Only coordinate representation differs; both arms use fresh initialization.
+# Clear inherited UENV_* flags before invoking the native launcher.
+parallelize: true
+stages:
+  - name: aeSharedFourier
+    stage: train
+    config_files:
+      - config/cerra_autoencoding.yml
+      - config/cerra_ae_basic_global_fourier.yml
+      - config/cerra_ae_hard_fourier_mlp.yml
+    options:
+      - ae_local_queries_per_cell=false
+      - decoder_absolute_coords=false
+      - wgtags.exp=cerra_ae_shared_mlp
+      - wgtags.coords=global_fourier
+    nodes: 1
+    chain_jobs: 1
+    cleanup_scripts: false
+    slurm_args:
+      - --ntasks=1
+      - --ntasks-per-node=1
+      - --cpus-per-task=8
+      - --gres=gpu:1
+      - --mem=64G
+      - --exclusive=user
+      - --partition=normal
+      - --time=00:30:00
+  - name: aeSharedAbs
+    stage: train
+    config_files:
+      - config/cerra_autoencoding.yml
+    options:
+      - ae_local_queries_per_cell=false
+      - decoder_global_coords=false
+      - decoder_absolute_coords=true
+      - wgtags.exp=cerra_ae_shared_mlp
+      - wgtags.coords=branch_absolute
+    nodes: 1
+    chain_jobs: 1
+    cleanup_scripts: false
+    slurm_args:
+      - --ntasks=1
+      - --ntasks-per-node=1
+      - --cpus-per-task=8
+      - --gres=gpu:1
+      - --mem=64G
+      - --exclusive=user
+      - --partition=normal
+      - --time=00:30:00

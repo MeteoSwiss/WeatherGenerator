@@ -1,0 +1,3 @@
+streams_directory: ./config/streams/cerra_ae_linear/
+wgtags:
+  exp: cerra_ae_coord_linear_matched

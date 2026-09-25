@@ -97,7 +97,7 @@ def run_inference(args):
     )
     cf = config.set_run_id(cf, args.run_id, args.reuse_run_id)
 
-    devices = Trainer.init_torch()
+    devices = Trainer.init_torch(allow_tf32=not cf.get("decoder_full_precision", False))
     cf = Trainer.init_ddp(cf)
 
     init_loggers(log_path=config.get_path_logs(cf))
@@ -114,6 +114,7 @@ def run_inference(args):
         traceback.print_exc()
         if cf.world_size == 1:
             pdb.post_mortem(tb)
+        raise
 
 
 def run_continue(args):
@@ -136,7 +137,9 @@ def run_continue(args):
     cf = config.set_run_id(cf, args.run_id, args.reuse_run_id)
 
     mp_method = cf.general.get("multiprocessing_method", "fork")
-    devices = Trainer.init_torch(multiprocessing_method=mp_method)
+    devices = Trainer.init_torch(
+        multiprocessing_method=mp_method, allow_tf32=not cf.get("decoder_full_precision", False)
+    )
     cf = Trainer.init_ddp(cf)
 
     init_loggers(log_path=config.get_path_logs(cf))
@@ -153,6 +156,7 @@ def run_continue(args):
         traceback.print_exc()
         if cf.world_size == 1:
             pdb.post_mortem(tb)
+        raise
 
 
 def run_train(args):
@@ -171,7 +175,9 @@ def run_train(args):
 
     cf.data_loading.rng_seed = int(time.time())
     mp_method = cf.general.get("multiprocessing_method", "fork")
-    devices = Trainer.init_torch(multiprocessing_method=mp_method)
+    devices = Trainer.init_torch(
+        multiprocessing_method=mp_method, allow_tf32=not cf.get("decoder_full_precision", False)
+    )
     cf = Trainer.init_ddp(cf)
 
     # this line should probably come after the processes have been sorted out else we get lots
@@ -194,6 +200,7 @@ def run_train(args):
         traceback.print_exc()
         if cf.world_size == 1:
             pdb.post_mortem(tb)
+        raise
 
 
 if __name__ == "__main__":

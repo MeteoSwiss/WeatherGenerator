@@ -458,9 +458,7 @@ def sht_psd(
 
 
 def _fft_psd_calc(ht: np.typing.NDArray) -> np.typing.NDArray:
-    """Return the PSD for positive non-zero frequencies of an even-length signal.
-
-    Assumes *ht* has an even number of points.
+    """Return the PSD for positive non-zero frequencies, length ``n // 2`` for any n.
 
     Parameters
     ----------
@@ -474,7 +472,7 @@ def _fft_psd_calc(ht: np.typing.NDArray) -> np.typing.NDArray:
     """
     n = len(ht)
     hf = np.fft.rfft(ht, norm="forward")
-    power = np.abs(hf[1 : round(n / 2 + 1)]) ** 2
+    power = np.abs(hf[1 : n // 2 + 1]) ** 2
     power *= 2.0  # compensate for positive frequencies only
     return power
 
@@ -516,7 +514,7 @@ def _calcposfreq(npoints: int, spacing_deg: float = 1.0) -> np.typing.NDArray:
         Positive frequencies, length ``npoints // 2``.
     """
     freq = np.fft.fftfreq(npoints, d=spacing_deg)
-    return np.abs(freq[1 : round(npoints / 2 + 1)])
+    return np.abs(freq[1 : npoints // 2 + 1])
 
 
 def fft_psd(

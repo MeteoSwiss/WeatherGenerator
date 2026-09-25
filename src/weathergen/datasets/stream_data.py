@@ -301,25 +301,16 @@ class StreamData:
         is_spoof: bool,
     ) -> None:
         """
-        Add data for target for one input.
+        Add target features for one output step.
 
         Parameters
         ----------
         fstep : int
             forecast step
-        targets : torch.tensor( number of healpix cells )
-            [ torch.tensor( num tokens, channels) ]
-              Target data for loss computation
-        targets_lens : torch.tensor( number of healpix cells)
-            length of targets per cell
-        target_coords : list( number of healpix cells)
-            [ torch.tensor( points per cell, 105) ]
-              target coordinates
-        target_times : list( number of healpix cells)
-            [ torch.tensor( points per cell) ]
-              absolute target times
-        idxs_inv:
-            Indices to reorder targets back to order in input
+        target_coords : torch.Tensor
+            Target features, grouped by HEALPix cell.
+        target_coords_per_cell : torch.Tensor
+            Number of target points per HEALPix cell.
 
         Returns
         -------

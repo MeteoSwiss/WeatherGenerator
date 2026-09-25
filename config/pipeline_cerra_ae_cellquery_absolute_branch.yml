@@ -1,0 +1,23 @@
+# Repeat the basic absolute-coordinate run with only per-cell queries added.
+parallelize: false
+stages:
+  - name: cerraPcAbs
+    stage: train
+    run_id: caea0019
+    config_files:
+      - config/cerra_autoencoding.yml
+      - config/cerra_ae_cellqueries.yml
+      - config/cerra_ae_basic_absolute_branch.yml
+    nodes: 1
+    chain_jobs: 1
+    cleanup_scripts: false
+    slurm_args:
+      - --ntasks=1
+      - --ntasks-per-node=1
+      - --cpus-per-task=8
+      - --gres=gpu:1
+      - --mem=64G
+      - --exclusive=user
+      - --partition=debug
+      - --time=00:30:00
+      - --uenv-passthrough=ignore

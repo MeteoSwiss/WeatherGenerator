@@ -1,0 +1,36 @@
+evaluation:
+  metrics: [rmse, mae]
+  score_plots: []
+  plot_ensemble: false
+  print_summary: true
+  log_scale: false
+  add_grid: false
+
+max_workers: 2
+global_plotting_options:
+  regions: [europe]
+  image_format: png
+  dpi_val: 150
+  CERRA:
+    add_healpix_grid: true
+    healpix_nside: 32
+    healpix_linewidth: 0.2
+    # Fixed 1985-01-01 target crop extrema; prediction outliers do not set the scale.
+    r_850:
+      vmin: 0.0
+      vmax: 100.107421875
+    z_500:
+      vmin: 51855.8828125
+      vmax: 56579.3828125
+
+default_streams:
+  CERRA:
+    regions: [europe]
+    channels: [r_850, z_500]
+    evaluation:
+      forecast_step: all
+      sample: all
+    plotting:
+      sample: [0]
+      forecast_step: all
+      data_plots: [maps, bias, target]

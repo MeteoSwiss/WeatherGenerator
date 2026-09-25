@@ -1,0 +1,70 @@
+# Evaluation of the CERRA single/joint/2-decoder target experiments (3 h lead, full-domain inference).
+# Inference run ids: ehqqslpf (fx6yh9m6 r850), m7ij3jok (vumx8vah z500),
+#                    zmiun8ul (mmfsjhph joint), qz56nk12 (y9sqjerj 2-dec).
+# results_base_dir is taken from each inference config's path_results (scratch).
+
+evaluation:
+  metrics:
+    - rmse
+    - mae
+    - bias
+    - psd:
+        psd_method: "fft"
+        psd_regrid_resolution: 0.05
+  score_plots: [lead_time]
+  summary_dir: "/capstor/scratch/cscs/rradev/wg_inference/evaluate/"
+  plot_ensemble: false
+  print_summary: true
+  log_scale: false
+  add_grid: false
+
+global_plotting_options:
+  regions: ["europe"]
+  image_format: "png"
+  dpi_val: 150
+  n_bins: 50
+
+default_streams:
+  CERRA:
+    regions: ["europe"]
+    channels: ["r_850", "z_500"]
+    evaluation:
+      forecast_step: "all"
+      sample: "all"
+    plotting:
+      sample: [0]
+      forecast_step: "all"
+      data_plots: [maps, bias, target, histograms]
+
+run_ids:
+  ehqqslpf:
+    label: "r850 only (fx6yh9m6)"
+    streams:
+      CERRA:
+        regions: ["europe"]
+        channels: ["r_850"]
+        evaluation: {forecast_step: "all", sample: "all"}
+        plotting: {sample: [0], forecast_step: "all", data_plots: [maps, bias, target, histograms]}
+  m7ij3jok:
+    label: "z500 only (vumx8vah)"
+    streams:
+      CERRA:
+        regions: ["europe"]
+        channels: ["z_500"]
+        evaluation: {forecast_step: "all", sample: "all"}
+        plotting: {sample: [0], forecast_step: "all", data_plots: [maps, bias, target, histograms]}
+  zmiun8ul:
+    label: "joint r850+z500 (mmfsjhph)"
+  qz56nk12:
+    label: "2 decoders (y9sqjerj @103k)"
+    streams:
+      CERRA_r850:
+        regions: ["europe"]
+        channels: ["r_850"]
+        evaluation: {forecast_step: "all", sample: "all"}
+        plotting: {sample: [0], forecast_step: "all", data_plots: [maps, bias, target, histograms]}
+      CERRA_z500:
+        regions: ["europe"]
+        channels: ["z_500"]
+        evaluation: {forecast_step: "all", sample: "all"}
+        plotting: {sample: [0], forecast_step: "all", data_plots: [maps, bias, target, histograms]}
