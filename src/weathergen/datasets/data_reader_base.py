@@ -306,6 +306,7 @@ class DataReaderBase(metaclass=ABCMeta):
     latitude in degrees from -90 (South) to +90 (North),
     and longitude in degrees from -180 (West) to +180 (East).
     """
+
     grid_shape: tuple[int, int] | None = None
 
     # The fields that need to be set by the child classes

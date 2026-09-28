@@ -62,21 +62,11 @@ class Tokenizer:
             else self.grid_target.active_to_global
         )
 
-        verts00_s, verts00_rots_s = healpix_verts_rots(
-            self.hl_source, 0.0, 0.0, cells=cells_source
-        )
-        verts10_s, verts10_rots_s = healpix_verts_rots(
-            self.hl_source, 1.0, 0.0, cells=cells_source
-        )
-        verts11_s, verts11_rots_s = healpix_verts_rots(
-            self.hl_source, 1.0, 1.0, cells=cells_source
-        )
-        verts01_s, verts01_rots_s = healpix_verts_rots(
-            self.hl_source, 0.0, 1.0, cells=cells_source
-        )
-        vertsmm_s, vertsmm_rots_s = healpix_verts_rots(
-            self.hl_source, 0.5, 0.5, cells=cells_source
-        )
+        verts00_s, verts00_rots_s = healpix_verts_rots(self.hl_source, 0.0, 0.0, cells=cells_source)
+        verts10_s, verts10_rots_s = healpix_verts_rots(self.hl_source, 1.0, 0.0, cells=cells_source)
+        verts11_s, verts11_rots_s = healpix_verts_rots(self.hl_source, 1.0, 1.0, cells=cells_source)
+        verts01_s, verts01_rots_s = healpix_verts_rots(self.hl_source, 0.0, 1.0, cells=cells_source)
+        vertsmm_s, vertsmm_rots_s = healpix_verts_rots(self.hl_source, 0.5, 0.5, cells=cells_source)
         self.hpy_verts = [
             verts00_s.to(torch.float32),
             verts10_s.to(torch.float32),
@@ -92,21 +82,11 @@ class Tokenizer:
             vertsmm_rots_s.to(torch.float32),
         ]
 
-        verts00, verts00_rots = healpix_verts_rots(
-            self.hl_target, 0.0, 0.0, cells=cells_target
-        )
-        verts10, verts10_rots = healpix_verts_rots(
-            self.hl_target, 1.0, 0.0, cells=cells_target
-        )
-        verts11, verts11_rots = healpix_verts_rots(
-            self.hl_target, 1.0, 1.0, cells=cells_target
-        )
-        verts01, verts01_rots = healpix_verts_rots(
-            self.hl_target, 0.0, 1.0, cells=cells_target
-        )
-        vertsmm, vertsmm_rots = healpix_verts_rots(
-            self.hl_target, 0.5, 0.5, cells=cells_target
-        )
+        verts00, verts00_rots = healpix_verts_rots(self.hl_target, 0.0, 0.0, cells=cells_target)
+        verts10, verts10_rots = healpix_verts_rots(self.hl_target, 1.0, 0.0, cells=cells_target)
+        verts11, verts11_rots = healpix_verts_rots(self.hl_target, 1.0, 1.0, cells=cells_target)
+        verts01, verts01_rots = healpix_verts_rots(self.hl_target, 0.0, 1.0, cells=cells_target)
+        vertsmm, vertsmm_rots = healpix_verts_rots(self.hl_target, 0.5, 0.5, cells=cells_target)
         self.hpy_verts_rots_target = [
             verts00_rots.to(torch.float32),
             verts10_rots.to(torch.float32),

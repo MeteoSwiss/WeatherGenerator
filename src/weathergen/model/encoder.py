@@ -321,9 +321,7 @@ class EncoderModule(torch.nn.Module):
             cell_frac = (58.6 / (2**self.healpix_level)) / 360.0
             max_freq = 4.0 / cell_frac
             freqs = torch.exp(
-                torch.linspace(
-                    0.0, float(np.log(max_freq)), n_freq, device=self.pe_global.device
-                )
+                torch.linspace(0.0, float(np.log(max_freq)), n_freq, device=self.pe_global.device)
             )
 
             ang_lat = 2 * torch.pi * torch.outer(u_lat, freqs)
@@ -407,9 +405,7 @@ class EncoderModule(torch.nn.Module):
 
         return tokens, posteriors
 
-    def assimilate_local_project_chunked(
-        self, tokens, tokens_global, cell_lens, q_cells_lens
-    ):
+    def assimilate_local_project_chunked(self, tokens, tokens_global, cell_lens, q_cells_lens):
         """
         Apply the local assimilation engine and then the
         local-to-global adapter using a chunking in the number of tokens

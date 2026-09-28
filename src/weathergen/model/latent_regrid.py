@@ -48,9 +48,9 @@ class LatentRegridder(torch.nn.Module):
             shift = 2 * (self.level_src - self.level_dst)
             parent_global = grid_src.active_to_global >> shift
             src_to_dst = grid_dst.to_active(parent_global)
-            counts = np.bincount(
-                src_to_dst[src_to_dst >= 0], minlength=self.num_dst
-            ).astype(np.float32)
+            counts = np.bincount(src_to_dst[src_to_dst >= 0], minlength=self.num_dst).astype(
+                np.float32
+            )
             # store numpy for reset_parameters; register zero-filled buffers so the model
             # can be constructed on the meta device (torch.from_numpy bypasses meta context)
             self._src_to_dst_np = src_to_dst

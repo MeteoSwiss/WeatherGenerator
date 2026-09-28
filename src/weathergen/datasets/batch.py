@@ -209,8 +209,7 @@ class BatchSamples:
             device = next(iter(bs.tokens_lens_by_level.values())).device
             torch_idxs = torch.tensor(subset, dtype=torch.long, device=device)
             bs.tokens_lens_by_level = {
-                L: torch.index_select(t, 1, torch_idxs)
-                for L, t in bs.tokens_lens_by_level.items()
+                L: torch.index_select(t, 1, torch_idxs) for L, t in bs.tokens_lens_by_level.items()
             }
         return bs
 

@@ -74,7 +74,7 @@ def _box_cells(level: int, region: dict) -> NDArray:
 
 
 def _coverage_cells(level: int, stream_info: dict, data_paths: Sequence) -> NDArray:
-    """Cells holding at least one data point of the stream 
+    """Cells holding at least one data point of the stream
     For projected grids this avoids the empty cells a lat/lon bounding box inevitably includes.
     """
     assert stream_info.get("type") == "anemoi", (
@@ -141,8 +141,7 @@ def _stream_region(stream_info) -> dict | None:
 
 
 def region_for_level(cf, level: int):
-    """Active region for the encoder operating at HEALPix ``level``.
-    """
+    """Active region for the encoder operating at HEALPix ``level``."""
     default_level = int(cf.healpix_level)
     streams = [
         si for si in cf.streams.values() if int(si.get("healpix_level", default_level)) == level

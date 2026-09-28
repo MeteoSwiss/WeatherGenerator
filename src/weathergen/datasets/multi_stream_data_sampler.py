@@ -782,7 +782,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         generating multiple samples
 
         """
-    
+
         L = int(stream_info.get("healpix_level", self.healpix_level))
         grid_source = self.grids[L]
         grid_target = self.grid_F

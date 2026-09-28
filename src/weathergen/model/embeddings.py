@@ -17,7 +17,6 @@ from weathergen.model.layers import MLP
 from weathergen.model.norms import RMSNorm
 from weathergen.model.positional_encoding import positional_encoding_harmonic
 
-
 _MAX_TOKENS_PER_EMBED_CALL = 32768
 
 

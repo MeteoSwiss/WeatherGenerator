@@ -82,9 +82,7 @@ class TokenizerMasking(Tokenizer):
         # sources are tokenized on this encoder's grid (hl_source / grid_source); targets on the
         # forecast grid (hl_target / grid_target)
         hl, grid = (
-            (self.hl_source, self.grid_source)
-            if pad_tokens
-            else (self.hl_target, self.grid_target)
+            (self.hl_source, self.grid_source) if pad_tokens else (self.hl_target, self.grid_target)
         )
         token_size = stream_info["token_size"]
 
