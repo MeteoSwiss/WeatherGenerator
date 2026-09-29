@@ -55,18 +55,54 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
         # create tensor for each stream
         losses_all: dict[str, float] = {loss: 0.0 for loss in self.losses}
 
-        source2target_matching_idxs, output_info, target2source_matching_idxs, _ = metadata
+        _, output_info, _, _ = metadata
 
         preds = preds.latent[0]  # [0] because we always want the first fstep
         target_info = targets.aux_outputs
         targets = targets.latent
+        if any(info is None for info in (*output_info, *target_info)):
+            raise ValueError("SSL requires explicit common-grid view metadata.")
+        target_ids = [info.global_params["idx"] for info in target_info]
+        if len(set(target_ids)) != len(target_ids):
+            raise ValueError("SSL teacher view IDs must be unique.")
+        target2source_matching_idxs = [
+            [
+                i
+                for i, info in enumerate(output_info)
+                if info.global_params["correspondence"] == target_id
+            ]
+            for target_id in target_ids
+        ]
 
         for name, (weight, loss_fn, extra_args) in self.losses.items():
+            self._check_view_axes(name, preds[name], output_info)
+            self._check_view_axes(name, targets[name], target_info)
+            if preds[name].shape[-1] != targets[name].shape[-1]:
+                raise ValueError(f"{name}: student and teacher feature axes must match.")
+            teacher_values, teacher_info = targets[name], target_info
+            if name in ("JEPA", "iBOT"):
+                teacher_by_id = {
+                    info.global_params["idx"]: (value, info)
+                    for value, info in zip(teacher_values, teacher_info, strict=True)
+                    if name in info.global_params["loss"]
+                }
+                matched = []
+                for info in output_info:
+                    if name not in info.global_params["loss"]:
+                        continue
+                    target_id = info.global_params["correspondence"]
+                    if target_id not in teacher_by_id:
+                        raise ValueError(f"{name}: missing corresponding teacher view {target_id}.")
+                    matched.append(teacher_by_id[target_id])
+                if not matched:
+                    raise ValueError(f"{name}: no eligible student/teacher view pairs.")
+                teacher_values = torch.stack([value for value, _ in matched])
+                teacher_info = [info for _, info in matched]
             preds_for_loss = self.gather_preds_for_loss(
                 name, preds[name], output_info, target2source_matching_idxs
             )
             targets_for_loss = self.gather_targets_for_loss(
-                name, targets[name], target_info, target2source_matching_idxs
+                name, teacher_values, teacher_info, target2source_matching_idxs
             )
 
             loss_value = loss_fn(**preds_for_loss, **targets_for_loss, **extra_args).mean()
@@ -74,6 +110,25 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
             losses_all[name] = loss_value.item()
 
         return LossValues(loss=loss, losses_all=losses_all, stddev_all={})
+
+    def _check_view_axes(self, name, tokens, metadata):
+        if tokens.ndim != 3 or tokens.shape[0] != len(metadata):
+            raise ValueError(f"{name}: latent batch axis must match view metadata.")
+        if name not in ("JEPA", "iBOT"):
+            return
+        cells = 12 * 4**self.cf.fe_healpix_level
+        patches = cells * self.cf.fe_num_queries
+        prefix = self.num_class_tokens if name == "iBOT" else 0
+        if tokens.shape[1] != patches + prefix:
+            raise ValueError(f"{name}: latent patches must use the fused forecast grid.")
+        if any(info.mask is None or info.mask.shape != (cells,) for info in metadata):
+            raise ValueError(f"{name}: visibility masks must use the fused forecast grid.")
+
+    def _patch_masks(self, metadata, name):
+        masks = torch.stack([info.mask for info in metadata if name in info.global_params["loss"]])
+        if self.cf.fe_num_queries > 1:
+            masks = masks.repeat_interleave(self.cf.fe_num_queries, dim=-1)
+        return masks.unsqueeze(1)
 
     def gather_preds_for_loss(self, name, preds, metadata, target2source_matching_idxs):
         if name == "JEPA":
@@ -85,15 +140,12 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
                 "student_patches_masked": torch.stack(
                     [
                         p
-                        for p, info in zip(preds, metadata, strict=False)
+                        for p, info in zip(preds, metadata, strict=True)
                         if "JEPA" in info.global_params["loss"]
                     ],
                     dim=0,
                 ),
-                "student_masks": torch.stack(
-                    [info.mask for info in metadata if "JEPA" in info.global_params["loss"]],
-                    dim=0,
-                ).unsqueeze(1),
+                "student_masks": self._patch_masks(metadata, name),
             }
         elif name == "iBOT":
             """
@@ -106,19 +158,16 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
                 "student_patches_masked": torch.stack(
                     [
                         p[self.num_class_tokens :]
-                        for p, info in zip(preds, metadata, strict=False)
+                        for p, info in zip(preds, metadata, strict=True)
                         if "iBOT" in info.global_params["loss"]
                     ],
                     dim=0,
                 ),
-                "student_masks": torch.stack(
-                    [info.mask for info in metadata if "iBOT" in info.global_params["loss"]],
-                    dim=0,
-                ).unsqueeze(1),
+                "student_masks": self._patch_masks(metadata, name),
                 "student_class_masked": torch.stack(
                     [
                         p[: self.num_class_tokens]
-                        for p, info in zip(preds, metadata, strict=False)
+                        for p, info in zip(preds, metadata, strict=True)
                         if "iBOT" in info.global_params["loss"]
                     ],
                     dim=0,
@@ -143,7 +192,7 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
                 "global2global_dino_student": torch.stack(
                     [
                         p
-                        for p, info in zip(preds, metadata, strict=False)
+                        for p, info in zip(preds, metadata, strict=True)
                         if "DINO" in info.global_params["loss"]
                         and info.global_params["relationship"] == "identity"
                     ],
@@ -170,10 +219,7 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
                     ],
                     dim=0,
                 ),
-                "teacher_masks": torch.stack(
-                    [info.mask for info in metadata if "JEPA" in info.global_params["loss"]],
-                    dim=0,
-                ).unsqueeze(1),
+                "teacher_masks": self._patch_masks(metadata, name),
             }
         elif name == "iBOT":
             """
@@ -186,18 +232,17 @@ class LossLatentSSLStudentTeacher(LossModuleBase):
                 "teacher_patches_masked": torch.stack(
                     [
                         p[self.num_class_tokens :]
-                        for p, info in zip(targets, metadata, strict=False)
+                        for p, info in zip(targets, metadata, strict=True)
+                        if "iBOT" in info.global_params["loss"]
                     ],
                     dim=0,
                 ),
-                "teacher_masks": torch.stack(
-                    [info.mask for info in metadata if "iBOT" in info.global_params["loss"]],
-                    dim=0,
-                ).unsqueeze(1),
+                "teacher_masks": self._patch_masks(metadata, name),
                 "teacher_class_masked": torch.stack(
                     [
                         p[: self.num_class_tokens]
-                        for p, info in zip(targets, metadata, strict=False)
+                        for p, info in zip(targets, metadata, strict=True)
+                        if "iBOT" in info.global_params["loss"]
                     ],
                     dim=0,
                 ),

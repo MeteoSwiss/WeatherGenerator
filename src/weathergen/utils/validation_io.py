@@ -247,6 +247,7 @@ def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
                     "num_class_tokens": int(num_class_tokens),
                     "spatial_points": int(coords_array.shape[0]),
                     "coords_order": "lat_lon",
+                    "num_queries": int(cf.fe_num_queries),
                 }
                 if npoints is not None:
                     group_attrs["total_points"] = int(npoints)
@@ -265,7 +266,7 @@ def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
                 extra_components, latent_array = _split_extra_tokens(
                     latent_name,
                     latent_array,
-                    coords_len,
+                    coords_len * cf.fe_num_queries if coords_len is not None else None,
                     num_register_tokens,
                     num_class_tokens,
                 )
@@ -279,6 +280,27 @@ def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
                             f"for sample {global_sample_idx}"
                         )
                     extra_written = True
+                if coords_len is not None and latent_array.ndim >= 2:
+                    spatial_tokens = coords_len * cf.fe_num_queries
+                    if (
+                        output_name not in ("tokens", "class_token", "register_tokens")
+                        and num_class_tokens
+                        and latent_array.shape[0] == spatial_tokens + num_class_tokens
+                    ):
+                        _write_array(
+                            group,
+                            f"{output_name}_class_token",
+                            latent_array[:num_class_tokens],
+                        )
+                        latent_array = latent_array[num_class_tokens:]
+                    if (
+                        output_name not in ("class_token", "register_tokens")
+                        and cf.fe_num_queries > 1
+                        and latent_array.shape[0] == spatial_tokens
+                    ):
+                        latent_array = latent_array.reshape(
+                            coords_len, cf.fe_num_queries, *latent_array.shape[1:]
+                        )
 
                 try:
                     _write_array(group, output_name, latent_array)
@@ -308,20 +330,15 @@ def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
 
 def _infer_latent_points_for_metadata(latents_for_sample: dict) -> int | None:
     """
-    Infer latent spatial length for metadata.
-    Prefer tokens if present, else patch tokens, else first available array.
+    Infer sequence length from an unambiguous spatial or full-state output.
+    Head-only outputs can contain class tokens, so do not infer from arbitrary heads.
     """
     preferred_keys = ("tokens", "latent_state", "z_pre_norm", "patch_tokens")
-    for key in latents_for_sample.keys():
-        if any(pref in key for pref in preferred_keys):
+    for key in preferred_keys:
+        if key in latents_for_sample:
             arr = np.asarray(latents_for_sample[key])
             if arr.ndim >= 1:
                 return arr.shape[0]
-
-    for latent_data in latents_for_sample.values():
-        arr = np.asarray(latent_data)
-        if arr.ndim >= 1:
-            return arr.shape[0]
     return None
 
 
@@ -368,9 +385,9 @@ _HEALPIX_COORDS_CACHE: dict[int, tuple[npt.NDArray, npt.NDArray]] = {}
 
 
 def _get_healpix_coords(cf) -> tuple[npt.NDArray, npt.NDArray] | None:
-    if cf is None or not hasattr(cf, "streams"):
+    if cf is None:
         return None
-    healpix_level = config.get_healpix_level(cf)
+    healpix_level = cf.fe_healpix_level
     cached = _HEALPIX_COORDS_CACHE.get(healpix_level)
     if cached is not None:
         return cached
@@ -397,19 +414,19 @@ def _build_latent_metadata(cf, batch, sample_idx_in_batch, npoints):
 
     if batch is not None and sample_idx_in_batch < len(batch.get_source_samples().get_samples()):
         sample = batch.get_source_samples().get_samples()[sample_idx_in_batch]
-        mask = None
-        for meta in sample.meta_info.values():
-            if hasattr(meta, "mask") and meta.mask is not None:
-                mask = meta.mask
-                break
-        if mask is not None:
-            mask_np = mask.detach().cpu().numpy().astype(bool)
-            if mask_np.shape[0] == coords_base.shape[0]:
-                coords_base = coords_base[mask_np]
+        if sample.view_meta is None or sample.view_meta.mask is None:
+            raise ValueError("Latent export requires common-grid view metadata.")
+        if sample.view_meta.mask.numel() != coords_base.shape[0]:
+            raise ValueError("Latent view metadata does not match fe_healpix_level.")
 
     coords_len = coords_base.shape[0]
-    if npoints is not None and npoints not in (coords_len, coords_len + num_extra_tokens):
-        return None, None, None, coords_len, num_register_tokens, num_class_tokens
+    spatial_tokens = coords_len * cf.fe_num_queries
+    if npoints is not None and npoints not in (
+        coords_len,
+        spatial_tokens,
+        spatial_tokens + num_extra_tokens,
+    ):
+        raise ValueError("Latent token count does not match the forecast grid and query count.")
 
     coords_array = coords_base.astype(np.float32)
     geoinfo_array = np.zeros((coords_len, 0), dtype=np.float32)
@@ -425,25 +442,19 @@ def _build_latent_metadata(cf, batch, sample_idx_in_batch, npoints):
 
 
 def get_latent_output(batch, model_output):
-    """
-    Interface for getting latent states
-    """
+    """Collect tensor outputs per sample; encoder posterior dictionaries are not spatial outputs."""
 
     # collect latent outputs per forecast step and per sample
     fp32 = torch.float32
 
     timestep_idxs = [0] if len(batch.get_output_idxs()) == 0 else batch.get_output_idxs()
 
-    sample_idxs = [
-        list(sample.streams_data.values())[0].sample_idx
-        for sample in batch.get_source_samples().get_samples()
-    ]
+    n_samples = len(batch.get_source_samples())
 
     latents_all: list[list[dict]] = []
     for t_idx in timestep_idxs:
         latents_all.append([])
         latent_pred = model_output.get_latent_prediction(t_idx)
-        n_samples = len(sample_idxs)
         for i_sample in range(n_samples):
             per_sample: dict = {}
             for lname, lval in latent_pred.items():
@@ -457,7 +468,7 @@ def get_latent_output(batch, model_output):
                         if tensor is not None:
                             sample_tensor = tensor[i_sample]
                             per_sample[field_name] = sample_tensor.detach().to(fp32).cpu().numpy()
-                else:
+                elif isinstance(lval, torch.Tensor):
                     per_sample[lname] = lval[i_sample].detach().to(fp32).cpu().numpy()
             latents_all[-1].append(per_sample)
 

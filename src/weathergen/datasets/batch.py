@@ -28,7 +28,10 @@ class SampleMetaData:
 
 class Sample:
     # keys: stream name, values: SampleMetaData
-    meta_info: dict[str | SampleMetaData]
+    meta_info: dict[str, SampleMetaData]
+
+    # Common forecast-grid visibility and view correspondence.
+    view_meta: SampleMetaData | None
 
     # data for all streams
     # keys: stream_name, values: StreamData
@@ -51,10 +54,14 @@ class Sample:
                     if meta_data.mask is not None and isinstance(meta_data.mask, torch.Tensor):
                         meta_data.mask = meta_data.mask.pin_memory()
 
+        if self.view_meta is not None and self.view_meta.mask is not None:
+            self.view_meta.mask = self.view_meta.mask.pin_memory()
+
         return self
 
     def __init__(self, stream_names: list[str]) -> None:
         self.meta_info = {}
+        self.view_meta = None
 
         self.streams_data = {}
         for stream_name in stream_names:
@@ -67,6 +74,9 @@ class Sample:
                 if self.meta_info[key].mask is not None
                 else None
             )
+
+        if self.view_meta is not None and self.view_meta.mask is not None:
+            self.view_meta.mask = self.view_meta.mask.to(device, non_blocking=True)
 
         for key, val in self.streams_data.items():
             if val is not None:
@@ -97,8 +107,8 @@ class Sample:
         """
         Check if sources for sample are all NaN
         """
-        is_nan = [s.source_nan() if s is not None else False for _, s in self.streams_data.items()]
-        return np.array(is_nan).all()
+        streams = [s for s in self.streams_data.values() if s is not None and not s.source_empty()]
+        return bool(streams) and all(s.source_nan() for s in streams)
 
     def targets_empty(self) -> bool:
         """
@@ -176,6 +186,10 @@ class BatchSamples:
         self.output_steps = output_steps
         self.output_idxs = output_idxs
         self.device = None
+        self.encoder_batches: dict[str, BatchSamples] = {}
+        self.encoder_name: str | None = None
+        self.healpix_level: int | None = None
+        self.coverage: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -187,6 +201,10 @@ class BatchSamples:
         self.tokens_lens = (
             self.tokens_lens.to(device, non_blocking=True) if self.tokens_lens is not None else None
         )
+        if self.coverage is not None:
+            self.coverage = self.coverage.to(device, non_blocking=True)
+        for child in self.encoder_batches.values():
+            child.to_device(device)
 
         self.device = device
 
@@ -198,20 +216,28 @@ class BatchSamples:
     def get_subset(self, subset: list | None = None):
         if subset is None:
             return self
-        else:
-            assert len(list(set(subset))) == len(subset), "subset contains duplicates"
-            # create copy and then select subset for samples and tokens_lens
-            bs = copy.deepcopy(self)
-            bs.samples = [bs.samples[i] for i in subset]
-            torch_idxs = torch.tensor(subset, dtype=torch.long, device=bs.tokens_lens.device)
-            bs.tokens_lens = torch.index_select(bs.tokens_lens, 1, torch_idxs)
-            return bs
+        assert len(set(subset)) == len(subset), "subset contains duplicates"
+        bs = copy.copy(self)
+        bs.samples = copy.deepcopy([self.samples[i] for i in subset])
+        for name in ("tokens_lens", "coverage"):
+            tensor = getattr(self, name)
+            if tensor is not None:
+                indices = torch.tensor(subset, dtype=torch.long, device=tensor.device)
+                setattr(bs, name, torch.index_select(tensor, 1, indices))
+        bs.encoder_batches = {
+            name: child.get_subset(subset) for name, child in self.encoder_batches.items()
+        }
+        return bs
 
     def get_num_source_steps(self) -> int:
         """
         Get number of input/source steps from smallest of all available streams
         """
-        return self.samples[0].get_num_source_steps()
+        if self.encoder_batches:
+            return min(child.get_num_source_steps() for child in self.encoder_batches.values())
+        if self.coverage is not None:
+            return self.coverage.shape[0]
+        return self.samples[0].get_num_source_steps() if self.samples else 0
 
     def get_num_target_steps(self) -> int:
         """
@@ -241,6 +267,11 @@ class BatchSamples:
         """
         Check if sources for all samples are empty
         """
+        if self.encoder_batches:
+            return all(child.sources_empty() for child in self.encoder_batches.values())
+        if self.coverage is not None:
+            # Coverage precedes training masking: learned queries remain valid when fully masked.
+            return not bool(self.coverage.any())
         return np.array([s.sources_empty() if s is not None else True for s in self.samples]).all()
 
     def targets_empty(self) -> bool:
@@ -253,7 +284,13 @@ class BatchSamples:
         """
         Check if sources for all samples are all NaN
         """
-        return np.array([s.sources_nan() if s is not None else False for s in self.samples]).all()
+        if self.encoder_batches:
+            children = [
+                child for child in self.encoder_batches.values() if not child.sources_empty()
+            ]
+            return bool(children) and all(child.sources_nan() for child in children)
+        samples = [s for s in self.samples if s is not None and not s.sources_empty()]
+        return bool(samples) and all(s.sources_nan() for s in samples)
 
     def targets_nan(self) -> bool:
         """
@@ -271,6 +308,10 @@ class BatchSamples:
         # pin source_tokens_lens
         if isinstance(self.tokens_lens, torch.Tensor):
             self.tokens_lens = self.tokens_lens.pin_memory()
+        if self.coverage is not None:
+            self.coverage = self.coverage.pin_memory()
+        for child in self.encoder_batches.values():
+            child.pin_memory()
 
         return self
 

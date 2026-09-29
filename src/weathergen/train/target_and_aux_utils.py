@@ -5,7 +5,11 @@ from weathergen.model.ema import EMAModel
 from weathergen.model.model_interface import init_model_and_shard
 from weathergen.train.target_and_aux_module_base import PhysicalTargetAndAux
 from weathergen.train.target_and_aux_ssl_teacher import EMATeacher, FrozenTeacher
-from weathergen.train.teacher_utils import load_encoder_from_checkpoint, prepare_encoder_teacher
+from weathergen.train.teacher_utils import (
+    check_teacher_input_contract,
+    load_encoder_from_checkpoint,
+    prepare_encoder_teacher,
+)
 
 
 def get_target_aux_calculator(
@@ -37,7 +41,9 @@ def get_target_aux_calculator(
         # work around for problems with FSDP2
         assert not cf.with_fsdp, "EMATeacher not supported with FSDP(2) at the moment"
 
-        meta_ema_model, _ = init_model_and_shard(
+        overrides = target_and_aux_calc_params.get("model_param_overrides", {})
+        check_teacher_input_contract(merge_configs(cf, overrides), cf, dataset)
+        meta_ema_model, teacher_model_params = init_model_and_shard(
             cf,
             dataset,
             None,
@@ -46,14 +52,12 @@ def get_target_aux_calculator(
             device,
             with_ddp=False,
             with_fsdp=False,
-            overrides=target_and_aux_calc_params.get("model_param_overrides", {}),
+            overrides=overrides,
         )
 
         # Strip to encoder + create fresh heads
-        cf_overridden = merge_configs(
-            cf, target_and_aux_calc_params.get("model_param_overrides", {})
-        )
-        prepare_encoder_teacher(meta_ema_model, cf.training_config, cf_overridden)
+        check_teacher_input_contract(meta_ema_model.cf, cf, dataset)
+        prepare_encoder_teacher(meta_ema_model, cf.training_config, meta_ema_model.cf)
 
         ema_model = EMAModel(
             model,
@@ -64,7 +68,9 @@ def get_target_aux_calculator(
         )
 
         batch_size = cf.get("world_size_original", cf.get("world_size")) * batch_size_per_gpu
-        target_aux = EMATeacher(model, ema_model, batch_size, cf.training_config)
+        target_aux = EMATeacher(
+            model, ema_model, batch_size, cf.training_config, teacher_model_params
+        )
 
         # Optional: warm start encoder from checkpoint
         teacher_run_id = target_and_aux_calc_params.get("teacher_run_id")

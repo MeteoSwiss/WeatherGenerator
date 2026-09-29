@@ -207,7 +207,7 @@ class OriginalPredictionBlock(nn.Module):
         self.block.append(
             MultiCrossAttentionHeadVarlen(
                 dim_in,
-                self.cf.ae_global_dim_embed,
+                dim_kv,
                 target_readout_num_heads,
                 dim_head_proj=self.tr_dim_head_proj,
                 with_residual=True,

@@ -1,4 +1,8 @@
 streams_directory: "./integration_tests/streams/"
+encoders:
+  default:
+    healpix_level: 4
+fe_healpix_level: 4
 run_path: "./results"
 model_path: "./models"
 loss_fcts: [["mse", 1.0]]

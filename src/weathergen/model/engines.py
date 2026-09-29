@@ -7,8 +7,8 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-import dataclasses
 import math
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
@@ -85,6 +85,8 @@ class EmbeddingEngine(torch.nn.Module):
         tokens_all = torch.empty(
             (num_tokens, self.cf.ae_local_dim_embed), dtype=self.dtype, device=batch.get_device()
         )
+        if num_tokens == 0:
+            return tokens_all
 
         # iterate over all streams
         x_embeds = []
@@ -93,27 +95,28 @@ class EmbeddingEngine(torch.nn.Module):
             sdata = []
             for istep in range(num_steps_input):
                 for sample in batch.get_samples():
-                    sdata += [sample.streams_data[stream_name].source_tokens_cells[istep]]
+                    source = sample.streams_data[stream_name].source_tokens_cells[istep]
+                    if source is not None and source.numel():
+                        sdata.append(source)
 
-            if all(s is None for s in sdata):
+            if not sdata:
                 continue
 
             sdata = torch.cat(sdata).to(tokens_all.dtype)
-            # skip empty stream
-            if sdata.numel() == 0:
-                continue
 
             # embedding from physical space to per patch latent representation
             x_embeds += [self.embeds[stream_name](sdata).flatten(0, 1)]
+        if not x_embeds:
+            raise ValueError("Nonzero encoder token counts without source tokens")
 
         # switch from stream to cell-based ordering and apply per cell positional encoding
 
         # if the assert is hit, max_number_tokens_local_per_cell in config needs to be increased
         max_tokens = self.cf.get("ae_local_max_tokens_per_cell", 64)
-        assert batch.tokens_lens.flatten(0, 2).sum(0).max() <= max_tokens, (
+        assert batch.tokens_lens.sum(dim=2).max() <= max_tokens, (
             "max number of tokens per cell for positional encoding exceeded."
+            " Increase ae_local_max_tokens_per_cell in config."
         )
-        " Increase ae_local_max_tokens_per_cell in config."
 
         if batch.tokens_lens.shape[2] == 1:
             # trivial with one stream
@@ -562,7 +565,7 @@ class ForecastingEngine(torch.nn.Module):
                 if (i % global_rate == 0) or i + 1 == self.cf.fe_num_blocks:
                     self.fe_blocks.append(
                         MultiSelfAttentionHead(
-                            self.cf.ae_global_dim_embed,
+                            self.cf.fe_dim_embed,
                             num_heads=self.cf.fe_num_heads,
                             dropout_rate=self.cf.fe_dropout_rate,
                             with_qk_lnorm=self.cf.fe_with_qk_lnorm,
@@ -578,10 +581,10 @@ class ForecastingEngine(torch.nn.Module):
                 else:
                     self.fe_blocks.append(
                         MultiSelfAttentionHeadLocal(
-                            self.cf.ae_global_dim_embed,
+                            self.cf.fe_dim_embed,
                             num_heads=self.cf.fe_num_heads,
-                            qkv_len=self.num_healpix_cells * self.cf.ae_local_num_queries,
-                            block_factor=self.cf.ae_global_block_factor,
+                            qkv_len=self.num_healpix_cells * self.cf.fe_num_queries,
+                            block_factor=self.cf.get("fe_block_factor", 64),
                             dropout_rate=self.cf.fe_dropout_rate,
                             with_qk_lnorm=self.cf.fe_with_qk_lnorm,
                             with_flash=self.cf.with_flash_attention,
@@ -596,8 +599,8 @@ class ForecastingEngine(torch.nn.Module):
                 # Add MLP block
                 self.fe_blocks.append(
                     MLP(
-                        self.cf.ae_global_dim_embed,
-                        self.cf.ae_global_dim_embed,
+                        self.cf.fe_dim_embed,
+                        self.cf.fe_dim_embed,
                         with_residual=True,
                         dropout_rate=self.cf.fe_dropout_rate,
                         norm_type=self.cf.norm_type,
@@ -608,7 +611,7 @@ class ForecastingEngine(torch.nn.Module):
                 # Optionally, add LayerNorm after i-th layer
                 if i in self.cf.get("fe_layer_norm_after_blocks", []):
                     self.fe_blocks.append(
-                        torch.nn.LayerNorm(self.cf.ae_global_dim_embed, elementwise_affine=False)
+                        torch.nn.LayerNorm(self.cf.fe_dim_embed, elementwise_affine=False)
                     )
 
         def init_weights_final(m):
@@ -728,7 +731,7 @@ class TargetPredictionEngineClassic(nn.Module):
             self.tte.append(
                 MultiCrossAttentionHeadVarlen(
                     dim_embed_q=self.dims_embed[i],
-                    dim_embed_kv=self.cf.ae_global_dim_embed,
+                    dim_embed_kv=self.cf.fe_dim_embed,
                     num_heads=stream_config["target_readout"]["num_heads"],
                     dim_head_proj=self.tr_dim_head_proj,
                     with_residual=True,
@@ -858,11 +861,11 @@ class TargetPredictionEngine(nn.Module):
         }
         self.tte = nn.ModuleList()
         self.output_in_norm = nn.LayerNorm(self.dims_embed[0])
-        self.latent_in_norm = nn.LayerNorm(self.cf.ae_global_dim_embed)
+        self.latent_in_norm = nn.LayerNorm(self.cf.fe_dim_embed)
         self.final_norm = nn.Identity()  # nn.RMSNorm(self.dims_embed[-1])
         self.dropout = nn.Dropout(0.2)
-        self.pos_embed = nn.Parameter(torch.zeros(1, 9, self.cf.ae_global_dim_embed))
-        dim_aux = self.cf.ae_global_dim_embed
+        self.pos_embed = nn.Parameter(torch.zeros(1, 9, self.cf.fe_dim_embed))
+        dim_aux = self.cf.fe_dim_embed
 
         target_readout_num_heads = next(self.cf.streams.values())["target_readout"]["num_heads"]
         for ith, dim in enumerate(self.dims_embed[:-1]):
@@ -895,7 +898,7 @@ class TargetPredictionEngine(nn.Module):
                 self.tte.append(
                     CrossAttentionBlock(
                         dim_q=dim,
-                        dim_kv=self.cf.ae_global_dim_embed,
+                        dim_kv=self.cf.fe_dim_embed,
                         dim_aux=dim_aux,
                         num_heads=target_readout_num_heads,
                         with_self_attn=True,
@@ -982,11 +985,8 @@ class TargetPredictionEngine(nn.Module):
         return output
 
 
-@dataclasses.dataclass
-class LatentState:
-    """
-    A dataclass to encapsulate the latent state aka the intput to latent heads.
-    """
+class LatentState(NamedTuple):
+    """Latent head inputs, with tensors discoverable by FSDP's PyTree traversal."""
 
     class_token: torch.Tensor
     register_tokens: torch.Tensor

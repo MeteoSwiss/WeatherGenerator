@@ -15,7 +15,7 @@ from typing import Any
 import torch
 
 from weathergen.common.config import Config, load_run_config, merge_configs
-from weathergen.model.model import ModelParams
+from weathergen.model.model import create_model_params
 from weathergen.model.model_interface import get_model
 from weathergen.model.ssl_target_processing import (
     DINOTargetProcessing,
@@ -24,6 +24,7 @@ from weathergen.model.ssl_target_processing import (
 )
 from weathergen.train.target_and_aux_module_base import TargetAndAuxModuleBase, TargetAuxOutput
 from weathergen.train.teacher_utils import (
+    check_teacher_input_contract,
     load_encoder_from_checkpoint,
     prepare_encoder_teacher,
 )
@@ -61,7 +62,7 @@ class EncoderTeacher(TargetAndAuxModuleBase):
                 targets[loss_name] = target_module(outputs[loss_name])
 
             # collect target meta-information for selected samples
-            aux_outputs = [list(sample.meta_info.values())[0] for sample in batch.get_samples()]
+            aux_outputs = [sample.view_meta for sample in batch.get_samples()]
 
             targets_out = TargetAuxOutput(batch.get_output_len(), batch.get_output_idxs())
             targets_out.latent = targets
@@ -85,14 +86,15 @@ class EncoderTeacher(TargetAndAuxModuleBase):
 class EMATeacher(EncoderTeacher):
     """SSL teacher using exponential moving average of student weights."""
 
-    def __init__(self, model, ema_model, batch_size, training_cfg, **kwargs):
+    def __init__(self, model, ema_model, batch_size, training_cfg, teacher_model_params, **kwargs):
         super().__init__(model, training_cfg, **kwargs)
         self.ema_model = ema_model
         self.batch_size = batch_size
+        self.teacher_model_params = teacher_model_params
         self.reset()
 
     def forward_teacher(self, model_params, batch):
-        return self.ema_model.forward_eval(model_params, batch)
+        return self.ema_model.forward_eval(self.teacher_model_params, batch)
 
     def reset(self, batch_size=None):
         self.ema_model.reset()
@@ -117,7 +119,7 @@ class FrozenTeacher(EncoderTeacher):
     SSL loss config.
     """
 
-    def __init__(self, teacher_model, training_cfg, teacher_model_params=None):
+    def __init__(self, teacher_model, training_cfg, teacher_model_params):
         super().__init__(teacher_model, training_cfg)
         self.teacher_model_params = teacher_model_params
 
@@ -141,27 +143,26 @@ class FrozenTeacher(EncoderTeacher):
         teacher_mini_epoch = params.get("teacher_mini_epoch", -1)
 
         # Load teacher's config, create model with teacher's architecture
-        teacher_config = load_run_config(teacher_run_id, teacher_mini_epoch, model_path=None)
+        teacher_config = load_run_config(
+            teacher_run_id, teacher_mini_epoch, model_path=None, private_config=cf
+        )
         teacher_config = merge_configs(teacher_config, {"with_ddp": False, "with_fsdp": False})
+        check_teacher_input_contract(teacher_config, cf, dataset)
 
         teacher_model = get_model(teacher_config, "student", dataset, {})
 
-        # Load only encoder weights
+        check_teacher_input_contract(teacher_model.cf, cf, dataset)
+
+        # Strip before loading so a missing SSL norm is restored when available.
+        prepare_encoder_teacher(teacher_model, cf.training_config, teacher_model.cf)
         load_encoder_from_checkpoint(teacher_model, cf, teacher_run_id, teacher_mini_epoch, device)
 
-        # Strip to encoder + create fresh heads
-        prepare_encoder_teacher(teacher_model, cf.training_config, teacher_config)
-
-        # Create model params matching teacher's architecture
-        teacher_model_params = ModelParams(teacher_config).create(teacher_config).to(device)
+        teacher_model_params = create_model_params(teacher_model.cf).to(device)
 
         return cls(teacher_model, cf.training_config, teacher_model_params)
 
     def forward_teacher(self, model_params, batch):
-        params = (
-            self.teacher_model_params if self.teacher_model_params is not None else model_params
-        )
-        return self.teacher_model(params, batch)
+        return self.teacher_model(self.teacher_model_params, batch)
 
     def reset(self, batch_size=None):
         pass

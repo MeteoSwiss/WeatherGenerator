@@ -14,10 +14,11 @@ import logging
 
 import torch
 from torch.distributed.fsdp import (
+    FSDPModule,
     MixedPrecisionPolicy,
     fully_shard,
 )
-from torch.distributed.tensor import distribute_tensor
+from torch.distributed.tensor import DTensor, distribute_tensor
 
 from weathergen.common.config import Config, get_path_model, merge_configs
 from weathergen.model.attention import (
@@ -27,9 +28,11 @@ from weathergen.model.attention import (
     MultiSelfAttentionHeadLocal,
     MultiSelfAttentionHeadVarlen,
 )
+from weathergen.model.engines import EfficientBilinear, TargetPredictionEngine
 from weathergen.model.layers import MLP
-from weathergen.model.model import Model, ModelParams
-from weathergen.model.utils import apply_fct_to_blocks, freeze_weights
+from weathergen.model.model import Model, create_model_params
+from weathergen.model.norms import AdaLayerNormLayer, RMSNorm
+from weathergen.model.utils import apply_fct_to_blocks, check_encoder_checkpoint, freeze_weights
 from weathergen.utils.distributed import is_root
 from weathergen.utils.performance import register_nvtx_hooks
 from weathergen.utils.utils import get_dtype
@@ -39,6 +42,26 @@ logger = logging.getLogger(__name__)
 
 # same as in config: student_teacher, forecasting, masking
 type TrainingMode = str
+
+
+@torch.no_grad()
+def _materialize_model(model, device):
+    """Initialize storage lost during meta construction, including concrete-owned queries."""
+    model.to_empty(device=device)
+    model.reset_parameters()
+    for module in model.modules():
+        if isinstance(module, RMSNorm):
+            torch.nn.init.ones_(module.weight)
+        elif isinstance(module, torch.nn.RMSNorm | EfficientBilinear):
+            module.reset_parameters()
+        elif isinstance(module, AdaLayerNormLayer):
+            module.initialise_weights()
+        elif isinstance(module, TargetPredictionEngine):
+            torch.nn.init.zeros_(module.pos_embed)
+    for encoder in model.encoders.values():
+        reset_queries = getattr(encoder, "reset_queries", None)
+        if reset_queries is not None:
+            reset_queries()
 
 
 def init_model_and_shard(
@@ -52,7 +75,7 @@ def init_model_and_shard(
     with_fsdp,
     overrides={},
 ):
-    model_creation_device = "meta" if with_ddp and with_fsdp else "cuda"
+    model_creation_device = "meta" if with_ddp and with_fsdp else device
     with torch.device(model_creation_device):
         model = get_model(cf, training_mode, dataset, overrides)
 
@@ -61,11 +84,7 @@ def init_model_and_shard(
         register_nvtx_hooks(model)
 
     # freeze request model part
-    apply_fct_to_blocks(model, cf.freeze_modules, freeze_weights)
-
-    # TODO: this should be handled in the encoder to be close where q_cells is defined
-    if "q_cells" in cf.freeze_modules:
-        model.encoder.q_cells.requires_grad = False
+    apply_fct_to_blocks(model, model.cf.freeze_modules, freeze_weights)
 
     if with_ddp and not with_fsdp:
         # create DDP model if running without FSDP
@@ -98,19 +117,12 @@ def init_model_and_shard(
             MultiSelfAttentionHeadVarlen,
         )
 
-        for module in model.encoder.ae_local_engine.ae_local_blocks.modules():
-            if isinstance(module, modules_to_shard):
-                fully_shard(module, **fsdp_kwargs)
+        # One unit per branch keeps data-dependent local operations out of FSDP collectives.
+        for encoder in model.encoders.values():
+            encoder.sharded_training = True
+            fully_shard(encoder, **fsdp_kwargs)
 
-        for module in model.encoder.ae_local_global_engine.ae_adapter.modules():
-            if isinstance(module, modules_to_shard):
-                fully_shard(module, **fsdp_kwargs)
-
-        for module in model.encoder.ae_global_engine.ae_global_blocks.modules():
-            if isinstance(module, modules_to_shard):
-                fully_shard(module, **fsdp_kwargs)
-
-        for module in model.forecast_engine.fe_blocks.modules():
+        for module in model.forecast_engine.modules():
             if isinstance(module, modules_to_shard):
                 # reshard_after_forward=False keeps FE parameters unsharded
                 # during the multi-step rollout loop.
@@ -141,14 +153,6 @@ def init_model_and_shard(
         for tensor in itertools.chain(model.parameters(), model.buffers()):
             assert tensor.device == torch.device("meta")
 
-        # For reasons we do not yet fully understand, when using train continue in some
-        # instances, FSDP2 does not register the forward_channels and forward_columns
-        # functions in the embedding engine as forward functions. Thus, yielding a crash
-        # because the input tensors are not converted to DTensors. This seems to primarily
-        # occur during validation.
-        for embed in model.encoder.embed_engine.embeds.values():
-            torch.distributed.fsdp.register_fsdp_forward_method(embed, "forward")
-
     # complete initalization and load model if inference/continuing a run
     if run_id_contd is not None:
         if is_root():
@@ -160,16 +164,13 @@ def init_model_and_shard(
         if is_root():
             logger.info(f"Loading checkpoint from id={run_id} at mini_epoch {mini_epoch}.")
         model = load_model(cf, model, device, run_id, mini_epoch)
-    else:
-        if with_ddp and with_fsdp:
-            model.to_empty(device="cuda")
-            if with_fsdp:
-                model.reset_parameters()
+    elif with_ddp and with_fsdp:
+        _materialize_model(model, device)
 
-    # model params
-    model_params = ModelParams(cf).create(cf)
-    model_params.reset_parameters(cf)
-    model_params = model_params.to(f"cuda:{cf.local_rank}")
+    resolved_model = (
+        model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    )
+    model_params = create_model_params(resolved_model.cf).to(device)
 
     return model, model_params
 
@@ -191,61 +192,38 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
         path_run / filename, map_location=torch.device("cpu"), mmap=True, weights_only=True
     )
 
-    is_model_sharded = cf.with_ddp and cf.with_fsdp
-    if is_model_sharded:
+    check_encoder_checkpoint(model, params)
+    # Normalize only the leading DDP namespace, including before sharded key lookup.
+    params = {key.removeprefix("module."): value for key, value in params.items()}
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        params = {"module." + key: value for key, value in params.items()}
+
+    if isinstance(model, FSDPModule):
         meta_sharded_sd = model.state_dict()
+        if meta_sharded_sd.keys() - params.keys() and any(
+            tensor.is_meta for tensor in meta_sharded_sd.values()
+        ):
+            # Initialize optional new heads before loading, never reset their restored siblings.
+            _materialize_model(model, device)
         maybe_sharded_sd = {}
         for param_name, full_tensor in params.items():
             sharded_meta_param = meta_sharded_sd.get(param_name)
             if sharded_meta_param is None:
                 logger.warning(f"Parameter {param_name} from checkpoint not found in model.")
                 continue
-            sharded_tensor = distribute_tensor(
-                full_tensor,
-                sharded_meta_param.device_mesh,
-                sharded_meta_param.placements,
+            maybe_sharded_sd[param_name] = (
+                distribute_tensor(
+                    full_tensor,
+                    sharded_meta_param.device_mesh,
+                    sharded_meta_param.placements,
+                )
+                if isinstance(sharded_meta_param, DTensor)
+                else full_tensor.to(device)
             )
-            # maybe_sharded_sd[param_name.replace("module.", "")] = nn.Parameter(sharded_tensor)
-            maybe_sharded_sd[param_name] = torch.nn.Parameter(sharded_tensor)
-        # choose `assign=True` for sharded model since we cannot call `copy_` on meta tensor
         mkeys, ukeys = model.load_state_dict(maybe_sharded_sd, strict=False, assign=True)
-
-        # new network parts (e.g. for fine-tuning)
-        if mkeys:
-            # Get the unique parent modules for the missing parameters
-            new_modules_to_init = {key.rsplit(".", 1)[0] for key in mkeys}
-
-            # Find the highest-level "root" new modules to avoid redundant initializations
-            root_new_modules = set()
-            for path in sorted(list(new_modules_to_init)):
-                if not any(path.startswith(root + ".") for root in root_new_modules):
-                    root_new_modules.add(path)
-
-            # Get all modules for quick lookup and initialize the new ones
-            all_modules = dict(model.named_modules())
-            for path in root_new_modules:
-                if is_root():
-                    logger.info(f"Initializing new module not found in checkpoint: {path}")
-                module_to_init = all_modules[path]
-                module_to_init.to_empty(device="cuda")
-                module_to_init.reset_parameters()
+        ukeys.extend(key for key in params if key not in meta_sharded_sd)
 
     else:
-        # fix mismatch between state_dict keys that can occur between interactive/non-interactive
-        model_has_prefix_module = list(model.state_dict().keys())[0].split(".")[0] == "module"
-        params_has_prefix_module = list(params.keys())[0].split(".")[0] == "module"
-        if model_has_prefix_module and not params_has_prefix_module:
-            # add "module." prefix
-            params_temp = {}
-            for k in params.keys():
-                params_temp["module." + k] = params[k]
-            params = params_temp
-        elif not model_has_prefix_module and params_has_prefix_module:
-            # remove "module." prefix
-            params_temp = {}
-            for k in params.keys():
-                params_temp[k.replace("module.", "")] = params[k]
-            params = params_temp
         # load checkpoint
         mkeys, ukeys = model.load_state_dict(params, strict=False)
         model = model.to(device)
@@ -270,12 +248,18 @@ def get_model(cf: Config, training_mode: TrainingMode, dataset, overrides):
     dataset :
     """
 
-    # TODO: how to avoid the dependence on dataset
-    sources_size = dataset.get_sources_size()
-    targets_num_channels = dataset.get_targets_num_channels()
-    targets_coords_size = dataset.get_targets_coords_size()
-
     cf_with_overrides = merge_configs(cf, overrides)
+    # Dataset size lists follow physical reader order, which overrides may rearrange/subset.
+    stream_names = dataset.streams_datasets
+    sources_by_name = dict(zip(stream_names, dataset.get_sources_size(), strict=True))
+    channels_by_name = dict(zip(stream_names, dataset.get_targets_num_channels(), strict=True))
+    coords_by_name = dict(zip(stream_names, dataset.get_targets_coords_size(), strict=True))
+    unknown = set(cf_with_overrides.streams) - sources_by_name.keys()
+    if unknown:
+        raise ValueError(f"Model streams have no dataset readers: {sorted(unknown)}")
+    sources_size = [sources_by_name[name] for name in cf_with_overrides.streams]
+    targets_num_channels = [channels_by_name[name] for name in cf_with_overrides.streams]
+    targets_coords_size = [coords_by_name[name] for name in cf_with_overrides.streams]
     return Model(
         cf_with_overrides, sources_size, targets_num_channels, targets_coords_size
     ).create()

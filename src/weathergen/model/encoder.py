@@ -7,12 +7,18 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, NamedTuple
+
 import torch
 from astropy_healpix import healpy
+from torch.distributed.tensor import DTensor, distribute_tensor
 from torch.utils.checkpoint import checkpoint
 
-from weathergen.common.config import Config, get_healpix_level
-from weathergen.datasets.batch import ModelBatch
+from weathergen.common.config import Config
+from weathergen.datasets.batch import BatchSamples
 from weathergen.model.engines import (
     EmbeddingEngine,
     GlobalAssimilationEngine,
@@ -21,33 +27,43 @@ from weathergen.model.engines import (
     LocalAssimilationEngine,
     QueryAggregationEngine,
 )
-
-# from weathergen.model.model import ModelParams
 from weathergen.model.parametrised_prob_dist import LatentInterpolator
 from weathergen.model.positional_encoding import positional_encoding_harmonic
 
+if TYPE_CHECKING:
+    from weathergen.model.model import ModelParams
 
-class EncoderModule(torch.nn.Module):
-    name: "EncoderModule"
 
-    def __init__(self, cf: Config, sources_size, targets_num_channels, targets_coords_size) -> None:
-        """
-        Initialize the EmbeddingEngine with the configuration.
+class EncoderOutput(NamedTuple):
+    healpix_level: int
+    patch_tokens: torch.Tensor
+    auxiliary_tokens: torch.Tensor
+    coverage: torch.Tensor
+    posteriors: list
 
-        :param cf: Configuration object containing parameters for the engine.
-        :param sources_size: List of source sizes for each stream.
-        :param stream_names: Ordered list of stream identifiers aligned with cf.streams.
-        """
-        super(EncoderModule, self).__init__()
+
+class EncoderBase(torch.nn.Module, ABC):
+    encoder_name: str
+    healpix_level: int
+
+    @abstractmethod
+    def forward(self, model_params: ModelParams, batch: BatchSamples) -> EncoderOutput:
+        """Encode one named, single-grid input batch."""
+        raise NotImplementedError
+
+
+class EncoderModule(EncoderBase):
+    name: EncoderModule
+
+    def __init__(self, cf: Config, sources_size, encoder_name: str) -> None:
+        """Create an encoder from its scoped configuration and ordered source sizes."""
+        super().__init__()
         self.cf = cf
-
-        self.healpix_level = get_healpix_level(cf)
+        self.encoder_name = encoder_name
+        self.healpix_level = cf.healpix_level
         self.num_healpix_cells = 12 * 4**self.healpix_level
-
-        self.cf = cf
         self.sources_size = sources_size
-        self.targets_num_channels = targets_num_channels
-        self.targets_coords_size = targets_coords_size
+        self.sharded_training = False
 
         self.ae_aggregation_engine: QueryAggregationEngine | None = None
         self.ae_global_engine: GlobalAssimilationEngine | None = None
@@ -84,32 +100,9 @@ class EncoderModule(torch.nn.Module):
         else:
             self.ae_local_global_engine = Local2GlobalAssimilationEngine(cf)
 
-        # learnable queries
-        if cf.ae_local_queries_per_cell:
-            s = (self.num_healpix_cells, cf.ae_local_num_queries, cf.ae_global_dim_embed)
-            q_cells = torch.rand(s, requires_grad=True) / cf.ae_global_dim_embed
-            # add meta data
-            q_cells[:, :, -8:-6] = (
-                (torch.arange(self.num_healpix_cells) / self.num_healpix_cells)
-                .unsqueeze(1)
-                .unsqueeze(1)
-                .repeat((1, cf.ae_local_num_queries, 2))
-            )
-            theta, phi = healpy.pix2ang(
-                nside=2**self.healpix_level, ipix=torch.arange(self.num_healpix_cells)
-            )
-            q_cells[:, :, -6:-3] = (
-                torch.cos(theta).unsqueeze(1).unsqueeze(1).repeat((1, cf.ae_local_num_queries, 3))
-            )
-            q_cells[:, :, -3:] = (
-                torch.sin(phi).unsqueeze(1).unsqueeze(1).repeat((1, cf.ae_local_num_queries, 3))
-            )
-            q_cells[:, :, -9] = torch.arange(cf.ae_local_num_queries)
-            q_cells[:, :, -10] = torch.arange(cf.ae_local_num_queries)
-        else:
-            s = (1, cf.ae_local_num_queries, cf.ae_global_dim_embed)
-            q_cells = torch.rand(s, requires_grad=True) / cf.ae_global_dim_embed
-        self.q_cells = torch.nn.Parameter(q_cells, requires_grad=True)
+        self.q_cells = torch.nn.Parameter(
+            self._create_queries(), requires_grad="q_cells" not in cf.get("freeze_modules", [])
+        )
 
         # query aggregation engine
         self.ae_aggregation_engine = QueryAggregationEngine(cf, self.num_healpix_cells)
@@ -117,36 +110,103 @@ class EncoderModule(torch.nn.Module):
         # global assimilation engine
         self.ae_global_engine = GlobalAssimilationEngine(cf, self.num_healpix_cells)
 
-    def forward(self, model_params, batch):
-        """
-        Encoder forward
-        """
+    def _create_queries(self, device=None, dtype=None):
+        cf = self.cf
+        num_cells = self.num_healpix_cells if cf.ae_local_queries_per_cell else 1
+        queries = (
+            torch.rand(
+                (num_cells, cf.ae_local_num_queries, cf.ae_global_dim_embed),
+                device=device,
+                dtype=dtype,
+            )
+            / cf.ae_global_dim_embed
+        )
+        if cf.ae_local_queries_per_cell and queries.device.type != "meta":
+            cells = torch.arange(num_cells, device=queries.device)
+            queries[:, :, -8:-6] = (cells / num_cells)[:, None, None]
+            theta, phi = healpy.pix2ang(
+                nside=2**self.healpix_level, ipix=torch.arange(num_cells, device="cpu"), nest=True
+            )
+            queries[:, :, -6:-3] = torch.as_tensor(
+                theta, device=queries.device, dtype=queries.dtype
+            ).cos()[:, None, None]
+            queries[:, :, -3:] = torch.as_tensor(
+                phi, device=queries.device, dtype=queries.dtype
+            ).sin()[:, None, None]
+            query_ids = torch.arange(cf.ae_local_num_queries, device=queries.device)
+            queries[:, :, -9] = query_ids
+            queries[:, :, -10] = query_ids
+        return queries
+
+    @torch.no_grad()
+    def reset_queries(self):
+        """Initialize queries after meta materialization, including sharded parameters."""
+        queries = self._create_queries(device=self.q_cells.device, dtype=self.q_cells.dtype)
+        if isinstance(self.q_cells, DTensor):
+            queries = distribute_tensor(queries, self.q_cells.device_mesh, self.q_cells.placements)
+        self.q_cells.copy_(queries)
+
+    def forward(self, model_params: ModelParams, batch: BatchSamples) -> EncoderOutput:
+        if batch.encoder_name != self.encoder_name or batch.healpix_level != self.healpix_level:
+            raise ValueError(f"Input batch does not match encoder {self.encoder_name!r}")
+        num_steps, batch_size = batch.get_num_source_steps(), len(batch)
+        coverage = batch.coverage
+        if coverage is None or coverage.shape != (num_steps, batch_size, self.num_healpix_cells):
+            raise ValueError(f"Invalid coverage axes for encoder {self.encoder_name!r}")
+
+        dependency = None
+        if self.sharded_training and self.training and torch.is_grad_enabled():
+            dependency = self.q_cells.new_zeros(())
+            for parameter in self.parameters():
+                if parameter.requires_grad:
+                    dependency = dependency + parameter[(0,) * parameter.ndim] * 0
+
+        num_aux = self.num_register_tokens + self.num_class_tokens
+        num_queries, dim_embed = self.q_cells.shape[-2:]
+        if not coverage.any():
+            zero = self.q_cells.new_zeros(()) if dependency is None else dependency
+            return EncoderOutput(
+                self.healpix_level,
+                zero.expand(batch_size, self.num_healpix_cells, num_queries, dim_embed),
+                zero.expand(batch_size, num_aux, dim_embed),
+                coverage.any(dim=0),
+                [],
+            )
 
         stream_cell_tokens = checkpoint(
             self.embed_engine, batch, model_params.pe_embed, use_reentrant=False
         )
-
         tokens_global, posteriors = checkpoint(
-            self.assimilate_local, model_params, stream_cell_tokens, batch, use_reentrant=False
+            self.assimilate_local,
+            model_params,
+            stream_cell_tokens,
+            batch,
+            dependency,
+            use_reentrant=False,
         )
-
+        # ponytail: dense global queries reach 196,608 cells at level 7; packing is separate work.
         tokens_global = checkpoint(
             self.ae_global_engine,
             tokens_global,
             coords=model_params.rope_coords,
             use_reentrant=False,
+        ).reshape(num_steps, batch_size, -1, dim_embed)
+
+        patches = tokens_global[:, :, num_aux:].reshape(
+            num_steps, batch_size, self.num_healpix_cells, num_queries, dim_embed
+        )
+        patches = patches.masked_fill(~coverage[..., None, None], 0).sum(dim=0)
+        auxiliary = tokens_global[:, :, :num_aux]
+        auxiliary = auxiliary.masked_fill(~coverage.any(dim=-1)[..., None, None], 0).sum(dim=0)
+        return EncoderOutput(
+            self.healpix_level, patches, auxiliary, coverage.any(dim=0), posteriors
         )
 
-        return tokens_global, posteriors
-
-    def interpolate_latents(self, tokens: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-        """ "
-        TODO
-        """
-
+    def interpolate_latents(self, tokens: torch.Tensor):
+        """Optionally sample the local latent distribution."""
         if self.cf.latent_noise_kl_weight > 0.0:
             tokens, posteriors = self.interpolator_latents.interpolate_with_noise(
-                tokens, sampling=self.stage
+                tokens, sampling=self.training
             )
         else:
             posteriors = torch.zeros((1,), device=tokens.device)
@@ -209,147 +269,60 @@ class EncoderModule(torch.nn.Module):
 
             tokens_global_unmasked += [toks_global_unmasked]
 
-        if len(tokens_global_unmasked) == 0:
-            assert False, "Not yet implemented"
+        if not tokens_global_unmasked:
+            return tokens_global[:0], posteriors
         tokens_global_unmasked = torch.cat(tokens_global_unmasked)
 
         return tokens_global_unmasked, posteriors
 
-    def aggregation_engine_unmasked(
-        self,
-        tokens_global_unmasked,
-        tokens_global_register_class,
-        tokens_lens,
-        rope_cell_coords=None,
-    ):
-        """
-        Aggregation engine on the global latents of unmasked cells
-        """
-
-        zero_pad = torch.zeros(1, device=tokens_global_unmasked.device, dtype=torch.int32)
-
-        # permute to use ae_local_num_queries as the batchsize and no_of_tokens
-        # as seq len for flash attention
-        tokens_global_unmasked = torch.permute(tokens_global_unmasked, [1, 0, 2])
-
-        cell_lens_unflattened = torch.sum(tokens_lens, 2)
-        cell_mask = cell_lens_unflattened.to(torch.bool)
-        batch_lens = cell_mask.sum(dim=-1).flatten()
-        expected_len = batch_lens.sum().item()
-        actual_len = tokens_global_unmasked.shape[1]
-        assert expected_len == actual_len, (
-            f"Shape mismatch: expected {expected_len}, got {actual_len}"
-        )
-        tokens_global_unmasked = torch.split(tokens_global_unmasked.squeeze(0), list(batch_lens))
-        tokens_global_unmasked = torch.cat(
-            [
-                t
-                for tup in zip(tokens_global_register_class, tokens_global_unmasked, strict=False)
-                for t in tup
-            ],
-            dim=0,
-        )
-
-        # Build packed coords matching the interleaved token order
-        if rope_cell_coords is not None:
-            num_extra = self.num_class_tokens + self.num_register_tokens
-            zero_coords = torch.zeros(
-                num_extra, 2, device=rope_cell_coords.device, dtype=rope_cell_coords.dtype
-            )
-            packed_coords = []
-            for mask_b in cell_mask.flatten(0, 1):
-                packed_coords.append(zero_coords)
-                packed_coords.append(rope_cell_coords[mask_b])
-            packed_coords = torch.cat(packed_coords, dim=0)
-        else:
-            packed_coords = None
-
-        batch_lens = batch_lens + (self.num_class_tokens + self.num_register_tokens)
-        batch_lens_patched = torch.cat([zero_pad, batch_lens], dim=0)
-        tokens_global_unmasked = self.ae_aggregation_engine(
-            tokens_global_unmasked, batch_lens_patched, use_reentrant=False, coords=packed_coords
-        )
-
-        return tokens_global_unmasked
-
     def assimilate_local(
-        self, model_params, tokens: torch.Tensor, batch: ModelBatch
-    ) -> torch.Tensor:
-        """
-        Processes embedded tokens locally and prepares them for the global assimilation
+        self,
+        model_params: ModelParams,
+        tokens: torch.Tensor,
+        batch: BatchSamples,
+        dependency: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list]:
+        """Assimilate observed cells, retaining learned queries for masked cells."""
+        cell_lens = batch.tokens_lens.sum(dim=2).flatten()
+        rs = batch.get_num_source_steps() * len(batch)
+        num_aux = self.num_register_tokens + self.num_class_tokens
+        num_queries, dim_embed = self.q_cells.shape[-2:]
 
-        Args:
-            model_params : Query and embedding parameters
-            tokens : Input tokens to be processed by local assimilation
-            cell_lens : Used to identify range of tokens to use from generated tokens in cell
-                embedding
-        Returns:
-            Tokens for global assimilation
-        """
-
-        cell_lens = torch.sum(batch.tokens_lens, 2).flatten()
-
-        num_steps_input = batch.get_num_source_steps()
-        rs = num_steps_input * len(batch)
-
-        # create register and latent tokens and prepend to latent spatial tokens
-        num_extra_tokens = self.num_register_tokens + self.num_class_tokens
-        pos_enc = positional_encoding_harmonic
-        tokens_global_register_class = pos_enc(self.q_cells.repeat(rs, num_extra_tokens, 1))
-
-        # TODO: re-enable or remove ae_local_queries_per_cell
-        if self.cf.ae_local_queries_per_cell:
-            tokens_global = (self.q_cells + model_params.pe_global).repeat(rs, 1, 1)
-        else:
-            num_tokens = self.num_healpix_cells
-            tokens_global = self.q_cells.repeat(num_tokens, 1, 1) + model_params.pe_global
-            tokens_global = tokens_global.repeat(rs, 1, 1)
-
-        # apply local assimilation engine and project onto global latent vectors
-        tokens_global_unmasked, posteriors = self.assimilate_local_project_chunked(
-            tokens, tokens_global, cell_lens, model_params.q_cells_lens
-        )
-
-        # apply aggregation engine on unmasked tokens
-        tokens_global_unmasked = self.aggregation_engine_unmasked(
-            tokens_global_unmasked,
-            tokens_global_register_class,
-            batch.tokens_lens,
-            rope_cell_coords=model_params.rope_cell_coords,
-        )
-
-        # final processing
-
-        tokens_global = (
-            torch.permute(tokens_global, [1, 0, 2])
-            .squeeze()
-            .reshape(rs, self.num_healpix_cells, -1)
-        )
-        # TODO, TODO, TODO: do we need this
-        tokens_global = torch.cat([tokens_global_register_class, tokens_global], dim=1)
-
-        # create mask from cell lens
-        mask_reg_class_tokens = (
-            torch.ones(
-                self.num_register_tokens + self.num_class_tokens,
-                device=tokens_global.device,
+        # Inject the sharded gradient dependency before expanding dense spatial queries.
+        queries = self.q_cells if dependency is None else self.q_cells + dependency
+        auxiliary = positional_encoding_harmonic(queries[:1, :1].expand(rs, num_aux, dim_embed))
+        patches = (queries + model_params.pe_global).repeat(rs, 1, 1)
+        posteriors = []
+        if tokens.numel():
+            unmasked, posteriors = self.assimilate_local_project_chunked(
+                tokens, patches, cell_lens, model_params.q_cells_lens
             )
-            .to(torch.bool)
-            .unsqueeze(0)
-            .repeat(rs, 1)
+
+        tokens_global = torch.cat(
+            [auxiliary, patches.reshape(rs, self.num_healpix_cells * num_queries, dim_embed)],
+            dim=1,
         )
-        cell_lens_r = cell_lens.unsqueeze(0).reshape(rs, self.num_healpix_cells)
-        mask = torch.cat([mask_reg_class_tokens, cell_lens_r.to(torch.bool)], dim=1)
+        if not tokens.numel():
+            return tokens_global, posteriors
 
-        # fill empty tensor using mask for positions of unmasked tokens
-        tokens_global[mask] = tokens_global_unmasked.to(tokens_global.dtype)
-
-        # recover batch dimension and build global token list
-        num_tokens_tot = self.num_healpix_cells + self.num_register_tokens + self.num_class_tokens
-        q_c_shape = self.q_cells.shape
-        tokens_global = (
-            tokens_global.reshape([rs, num_tokens_tot, q_c_shape[-2], q_c_shape[-1]])
-            #  removing this line because else they get added twice? + model_params.pe_global
-        ).flatten(1, 2)
-
+        cell_mask = cell_lens.reshape(rs, self.num_healpix_cells).to(torch.bool)
+        active = cell_mask.any(dim=-1)
+        spatial_mask = cell_mask.repeat_interleave(num_queries, dim=-1)
+        tokens_global[:, num_aux:][spatial_mask] = unmasked.flatten(0, 1).to(tokens_global.dtype)
+        mask = torch.cat(
+            [
+                active[:, None].expand(-1, num_aux),
+                spatial_mask,
+            ],
+            dim=1,
+        )
+        # Do not send empty step/view sequences to variable-length attention.
+        batch_lens = mask.sum(dim=-1)[active]
+        batch_lens = torch.cat([batch_lens.new_zeros(1), batch_lens])
+        coords = model_params.rope_coords
+        packed_coords = None if coords is None else coords.expand(rs, -1, -1)[mask]
+        aggregated = self.ae_aggregation_engine(
+            tokens_global[mask], batch_lens, use_reentrant=False, coords=packed_coords
+        )
+        tokens_global[mask] = aggregated.to(tokens_global.dtype)
         return tokens_global, posteriors

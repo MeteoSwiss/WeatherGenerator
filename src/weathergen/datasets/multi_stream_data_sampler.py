@@ -7,6 +7,7 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+import copy
 import dataclasses
 import logging
 import pathlib
@@ -16,9 +17,9 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from weathergen.common.config import Config, get_healpix_level
+from weathergen.common.config import Config, get_encoder_streams
 from weathergen.common.io import IOReaderData
-from weathergen.datasets.batch import ModelBatch
+from weathergen.datasets.batch import BatchSamples, ModelBatch, SampleMetaData
 from weathergen.datasets.data_reader_anemoi import DataReaderAnemoi
 from weathergen.datasets.data_reader_base import (
     DataReaderBase,
@@ -85,6 +86,17 @@ def collect_datasources(stream_datasets: list, idx: int, type: str, rng) -> IORe
     return IOReaderData.combine(rdatas)
 
 
+def project_healpix_mask(mask, source_level, target_level, *, require_all=False):
+    """Project NESTED cell flags; keep masks use ALL, visibility uses ANY."""
+    mask = torch.as_tensor(mask, dtype=torch.bool)
+    if source_level < target_level:
+        return mask.repeat_interleave(4 ** (target_level - source_level), dim=-1)
+    if source_level > target_level:
+        children = mask.reshape(*mask.shape[:-1], 12 * 4**target_level, -1)
+        return children.all(dim=-1) if require_all else children.any(dim=-1)
+    return mask
+
+
 @dataclasses.dataclass
 class _Stream:
     info: Config
@@ -104,10 +116,18 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         self.world_size = cf.world_size
         self.repeat_data = cf.data_loading.get("repeat_data_in_mini_epoch", False)
 
-        self.healpix_level = get_healpix_level(cf)
+        self.encoder_streams = get_encoder_streams(cf)
+        self.encoder_levels = {
+            name: cf.encoders[name].healpix_level for name in self.encoder_streams
+        }
+        self.healpix_level = cf.fe_healpix_level
         self.num_healpix_cells = 12 * 4**self.healpix_level
         self.masker = Masker(self.healpix_level, stage, cf.streams, self.mode_cfg)
-        self.tokenizer = TokenizerMasking(self.healpix_level, self.masker)
+        self.tokenizers = {
+            level: TokenizerMasking(level)
+            for level in {self.healpix_level, *self.encoder_levels.values()}
+        }
+        self.tokenizer = self.tokenizers[self.healpix_level]
 
         forecast_cfg = FORECAST_DEFAULTS | OmegaConf.to_object(mode_cfg.get("forecast", {}))
         self.output_offset = forecast_cfg["offset"]
@@ -130,10 +150,12 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         )
 
         # needed as offset for permutations
-        source_cfgs = self.mode_cfg.get("model_input")
-        self.max_input_steps = np.array(
-            [sc.get("num_steps_input", 1) for _, sc in source_cfgs.items()]
-        ).max()
+        input_cfgs = [
+            cfg
+            for section in ("model_input", "target_input")
+            for cfg in self.mode_cfg.get(section, {}).values()
+        ]
+        self.max_input_steps = max(cfg.get("num_steps_input", 1) for cfg in input_cfgs)
 
         self.time_window_handler = tw
         if is_root():
@@ -325,8 +347,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         else:
             raise ValueError(f"Unknown forecast policy {self.forecast_policy}")
 
-        # reset tokenizer RNG
-        self.tokenizer.reset_rng(self.rng)
+        self.masker.reset_rng(self.rng)
         return (perms, fs)
 
     def _get_fsm(self) -> int:
@@ -381,61 +402,30 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         # [0]: with multiple ds per stream we use the first one
         return self.streams_datasets[stream_name].readers[0].denormalize_target_channels(data)
 
-    def _build_stream_data_input(
-        self,
-        mode: str,
-        stream_data: StreamData,
-        base_idx: TIndex,
-        stream_info: dict,
-        num_steps_input: int,
-        input_data: list,
-        input_tokens: list,
-        mask: torch.Tensor | None = None,
-    ) -> tuple[StreamData, dict | None]:
-        """
-        Build model network input
-
-        Args:
-            stream_data :
-            base_idx: Time index for this sample
-            num_forecast_steps: Number of forecast steps
-            view_meta: ViewMetadata describing spatial mask
-            stream_info: Stream configuration dict
-            stream_ds: List of dataset readers for this stream
-
-        Returns:
-            StreamData with source and targets masked according to view_meta
-        """
-
-        if "network_input" in mode:
-            # iterate overall input steps
-            for step, idx in enumerate(range(base_idx, base_idx - num_steps_input, -1)):
-                # TODO: check that we are not out of bounds when we go back in time
-
-                time_win_source = self.time_window_handler.window(idx)
-
-                # collect all targets for current stream
-                # do we want this to be ascending or descending in time?
-                rdata = input_data[-(step + 1)]
-                token_data = input_tokens[-(step + 1)]
-
-                if token_data[0] is None and token_data[1] is None:
-                    continue
-
-                # preprocess data for model input
-                (source_cells, source_cells_lens) = self.tokenizer.get_source(
-                    stream_info,
-                    rdata,
-                    token_data,
-                    (time_win_source.start, time_win_source.end),
-                    mask,
-                )
-
-                stream_data.add_source(
-                    self._stage, step, rdata, source_cells_lens, source_cells, rdata.is_spoof
-                )
-
-        return stream_data
+    def _build_encoder_input(
+        self, child, view_idx, stream_name, stream_info, base_idx, input_data, input_tokens, mask
+    ):
+        """Tokenize one view while keeping raw coverage independent of masking."""
+        level = child.healpix_level
+        steps = child.coverage.shape[0]
+        data = StreamData(base_idx, steps, 0, 12 * 4**level)
+        keep = project_healpix_mask(mask, self.healpix_level, level, require_all=True)
+        for step in range(steps):
+            raw = input_data[-(step + 1)]
+            indices, lengths = input_tokens[-(step + 1)]
+            if raw.is_spoof or raw.is_empty() or raw.data.shape[-1] == 0 or indices is None:
+                continue
+            coverage = torch.tensor([len(cell) > 0 for cell in lengths], dtype=torch.bool)
+            child.coverage[step, view_idx] |= coverage
+            if not (coverage & keep).any():
+                continue
+            window = self.time_window_handler.window(base_idx - step)
+            cells, counts = self.tokenizers[level].get_source(
+                stream_info, raw, (indices, lengths), (window.start, window.end), keep
+            )
+            data.add_source(self._stage, step, None, counts, cells, False)
+        child.samples[view_idx].add_stream_data(stream_name, data)
+        return data
 
     def _build_stream_data_output(
         self,
@@ -491,72 +481,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
 
         return stream_data
 
-    def _build_stream_data(
-        self,
-        modes: str,
-        base_idx: TIndex,
-        num_forecast_steps: int,
-        stream_info: dict,
-        num_steps_input: int,
-        input_data: list,
-        output_data: list,
-        input_tokens: list,
-        output_tokens: list,
-        output_mask,
-        input_mask,
-    ) -> StreamData:
-        """
-        Return one batch of data
-        Build a StreamData object for a single view (teacher or student).
-
-        Args:
-            modes :
-            stream_data :
-            base_idx: Time index for this sample
-            num_forecast_steps: Number of forecast steps
-            stream_info: Stream configuration dict
-            stream_ds: List of dataset readers for this stream
-
-            output_mask : mask for output/prediction/target
-            input_mask : mask for network input (can be source or target)
-
-
-        Returns:
-            StreamData with source and targets masked according to view_meta
-        """
-
-        num_output_steps = self._get_output_length(num_forecast_steps)
-        stream_data = StreamData(
-            base_idx,
-            num_steps_input,
-            num_output_steps,
-            self.num_healpix_cells,
-        )
-
-        stream_data = self._build_stream_data_input(
-            modes,
-            stream_data,
-            base_idx,
-            stream_info,
-            num_steps_input,
-            input_data,
-            input_tokens,
-            input_mask,
-        )
-
-        stream_data = self._build_stream_data_output(
-            modes,
-            stream_data,
-            base_idx,
-            stream_info,
-            num_forecast_steps,
-            output_data,
-            output_tokens,
-            output_mask,
-        )
-
-        return stream_data
-
     def _get_data_windows(self, base_idx, num_forecast_steps, num_steps_input_max, stream_ds):
         """
         Collect all data needed for current stream to potentially amortize costs by
@@ -570,18 +494,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             # TODO: check that we are not out of bounds when we go back in time
 
             rdata = collect_datasources(stream_ds, idx, "source", self.rng)
-
-            if rdata.is_empty():
-                # work around for https://github.com/pytorch/pytorch/issues/158719
-                # create non-empty mean data instead of empty tensor
-                time_win = self.time_window_handler.window(idx)
-                rdata = spoof(
-                    self.healpix_level,
-                    time_win.start,
-                    stream_ds[0].get_geoinfo_size(),
-                    len(stream_ds[0].mean[stream_ds[0].source_idx]),
-                )
-                rdata.is_spoof = True
 
             input_data += [rdata]
 
@@ -610,152 +522,180 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         return (input_data, output_data)
 
     def _get_source_target_masks(self, training_mode):
-        """
-        Generate source and target masks for all streams.
-        """
+        """Generate stream masks, rejecting incompatible common view metadata."""
         masks = {}
+        shared = None
         for stream_name, stream_data in self.streams_datasets.items():
-            stream_info = stream_data.info
-            # Build source and target sample masks
-            masks[stream_name] = self.tokenizer.build_samples_for_stream(
-                training_mode,
-                self.num_healpix_cells,
-                stream_info,
+            target, source, mapping = self.masker.build_samples_for_stream(
+                training_mode, self.num_healpix_cells, stream_data.info
             )
-            # identical for all streams
-            num_target_samples = len(masks[stream_name][0])
-            num_source_samples = len(masks[stream_name][1])
-
-        return masks, num_source_samples, num_target_samples
+            signature = (
+                [meta.global_params for meta in source.metadata],
+                [meta.global_params for meta in target.metadata],
+                mapping.tolist(),
+            )
+            if shared is not None and signature != shared:
+                raise ValueError(f"Stream {stream_name!r} has incompatible view correspondence")
+            shared = signature
+            masks[stream_name] = (target, source, mapping)
+        return masks, len(shared[0]), len(shared[1])
 
     def _get_output_length(self, num_forecast_steps):
         # max(1, ...) : self.output_offset and num_forecast_steps are zero for pure masking
         return max(1, self.output_offset + num_forecast_steps)
 
-    def _preprocess_model_batch(
-        self, batch: ModelBatch, source_input_steps: int, target_input_steps: int
-    ):
-        """
-        Perform necessary pre-processing of model batch
-        """
-        stream_names = list(self.streams_datasets.keys())
-        batch.source_samples.tokens_lens = get_tokens_lens(
-            stream_names, batch.source_samples, source_input_steps
-        )
-        batch.target_samples.tokens_lens = get_tokens_lens(
-            stream_names, batch.target_samples, target_input_steps
-        )
-
+    def _preprocess_model_batch(self, batch: ModelBatch):
+        for samples in (batch.source_samples, batch.target_samples):
+            for name, child in samples.encoder_batches.items():
+                child.tokens_lens = get_tokens_lens(
+                    self.encoder_streams[name], child, child.coverage.shape[0]
+                )
+                # Availability is the union over streams and consumed input steps.
+                visible = child.tokens_lens.any(dim=2).any(dim=0)
+                visible = project_healpix_mask(visible, child.healpix_level, self.healpix_level)
+                for view_idx, sample in enumerate(samples.samples):
+                    sample.view_meta.mask |= visible[view_idx]
         return batch
 
     def _get_batch(self, idx: int, num_forecast_steps: int):
-        """
-        Assemble a batch using the sample corresponding to idx
-        """
-
+        """Collect physical windows once and route inputs to named encoder grids."""
         mode = self.mode_cfg.get("training_mode")
-        source_cfgs = self.mode_cfg.get("model_input")
-        target_cfgs = self.mode_cfg.get("target_input", {})
-
-        # get/coordinate masks
-        masks_streams, num_source_samples, num_target_samples = self._get_source_target_masks(mode)
-
-        source_select, target_select = [], []
+        masks_streams, num_source, num_target = self._get_source_target_masks(mode)
+        source_modes, target_modes = [], []
         if "masking" in mode:
-            source_select += ["network_input", "target_coords"]
-            target_select += ["target_values"]
+            source_modes += ["network_input", "target_coords"]
+            target_modes += ["target_values"]
         if "student_teacher" in mode or "latent_loss" in mode:
-            source_select += ["network_input"]
-            target_select += ["network_input"]
-        # remove duplicates
-        source_select, target_select = list(set(source_select)), list(set(target_select))
-        if len(source_select) == 0 or len(target_select) == 0:
+            source_modes += ["network_input"]
+            target_modes += ["network_input"]
+        if not source_modes or not target_modes:
             raise NotImplementedError(f"Unsupported training mode {mode}.")
 
-        num_output_steps = self._get_output_length(num_forecast_steps)
+        output_steps = self._get_output_length(num_forecast_steps)
         batch = ModelBatch(
-            list(self.streams_datasets.keys()),
-            num_source_samples,
-            num_target_samples,
-            self.output_offset,
-            num_output_steps,
+            list(self.streams_datasets), num_source, num_target, self.output_offset, output_steps
         )
-
-        # for all streams
-        for stream_name, stream_data in self.streams_datasets.items():
-            stream_info, stream_ds = stream_data.info, stream_data.readers
-            (target_masks, source_masks, source_to_target) = masks_streams[stream_name]
-
-            # max number of input steps
-            input_steps = np.array([sc.get("num_steps_input", 1) for _, sc in source_cfgs.items()])
-            assert input_steps.min() == input_steps.max(), (
-                "Number of input steps has to be constant across configs."
-            )
-            assert input_steps.min(), "Number of input steps has to be greater than zero."
-
-            # input_data and output_data is conceptually consecutive but differs
-            # in source and target channels; overlap in one window when self.output_offset=0
-            i_max = input_steps.max().item()
-            (input_data, output_data) = self._get_data_windows(
-                idx, num_forecast_steps, i_max, stream_ds
-            )
-
-            # tokenize windows
-            # *_tokens = [ (cells_idx, cells_idx_lens), ... ] with length = #time_steps
-            input_tokens = self.tokenizer.get_tokens_windows(stream_info, input_data, True)
-            output_tokens = self.tokenizer.get_tokens_windows(stream_info, output_data, False)
-
-            for sidx, source_mask in enumerate(source_masks.masks):
-                # Map each source to its target
-                tidx = source_to_target[sidx].item()
-                sdata = self._build_stream_data(
-                    source_select,
-                    idx,
-                    num_forecast_steps,
-                    stream_info,
-                    source_masks.metadata[sidx].params.get("num_steps_input", 1),
-                    input_data,
-                    output_data,
-                    input_tokens,
-                    output_tokens,
-                    output_mask=target_masks.masks[tidx],
-                    input_mask=source_mask,
+        source_cfgs = self.mode_cfg.model_input
+        target_cfgs = self.mode_cfg.target_input
+        correspondence = self.masker.parse_src_target_correspondence(
+            self.mode_cfg.losses, target_cfgs, source_cfgs
+        )
+        active_targets = {value[0] for value in correspondence.values() if value}
+        # Parameters come from common view configuration, never a stream's masking override.
+        view_configs = (
+            [
+                cfg
+                for i, cfg in enumerate(source_cfgs.values())
+                if i in correspondence
+                for _ in range(cfg.get("num_samples", 1))
+            ],
+            [
+                cfg
+                for i, cfg in enumerate(target_cfgs.values())
+                if i in active_targets
+                for _ in range(cfg.get("num_samples", 1))
+            ],
+        )
+        # Global metadata was validated across every stream above.
+        target_masks, source_masks, _ = next(iter(masks_streams.values()))
+        sides = (
+            (batch.source_samples, source_masks, view_configs[0]),
+            (batch.target_samples, target_masks, view_configs[1]),
+        )
+        for samples, masks, configs in sides:
+            steps = {cfg.get("num_steps_input", 1) for cfg in configs}
+            if len(steps) != 1 or min(steps) < 1:
+                raise ValueError("Input steps must be positive and constant across views per side")
+            steps = steps.pop()
+            if len(configs) != len(samples):
+                raise ValueError("Common view configuration does not match generated views")
+            for sample, cfg, metadata in zip(samples.samples, configs, masks.metadata, strict=True):
+                sample.view_meta = SampleMetaData(
+                    params=copy.deepcopy(cfg),
+                    mask=torch.zeros(self.num_healpix_cells, dtype=torch.bool),
+                    global_params=copy.deepcopy(metadata.global_params),
                 )
-
-                batch.add_source_stream(sidx, tidx, stream_name, sdata, source_masks.metadata[sidx])
-
-            # for t_idx, mask in enumerate(source_masks):
-            for tidx, target_mask in enumerate(target_masks.masks):
-                # depending on the mode, the the streamdata obj to have the target mask applied to
-                # the inputs. Hence the target mask is also the source mask here.
-                sdata = self._build_stream_data(
-                    target_select,
-                    idx,
-                    num_forecast_steps,
-                    stream_info,
-                    target_masks.metadata[tidx].params.get("num_steps_input", 1),
-                    input_data,
-                    output_data,
-                    input_tokens,
-                    output_tokens,
-                    output_mask=target_mask,
-                    input_mask=target_mask,
+            for name, members in self.encoder_streams.items():
+                child = BatchSamples(members, len(samples), output_steps, batch.output_idxs)
+                child.encoder_name = name
+                child.healpix_level = self.encoder_levels[name]
+                child.coverage = torch.zeros(
+                    steps, len(samples), 12 * 4**child.healpix_level, dtype=torch.bool
                 )
-                target_metadata = target_masks.metadata[tidx]
-                # also want to add the mask to the metadata
-                target_metadata.mask = target_mask
-                # Map target to all source students
-                student_indices = [
-                    s_idx for s_idx, tid in enumerate(source_to_target) if tid == tidx
-                ]
-                batch.add_target_stream(tidx, student_indices, stream_name, sdata, target_metadata)
+                samples.encoder_batches[name] = child
+                for sample, parent in zip(child.samples, samples.samples, strict=True):
+                    sample.view_meta = copy.deepcopy(parent.view_meta)
 
-        source_in_steps = input_steps.max().item()
-        target_in_steps = np.array([tc.get("num_steps_input", 1) for _, tc in target_cfgs.items()])
-        target_in_steps = 1 if len(target_in_steps) == 0 else target_in_steps.max().item()
-        batch = self._preprocess_model_batch(batch, source_in_steps, target_in_steps)
-
-        return batch
+        for stream_name, stream in self.streams_datasets.items():
+            target_masks, source_masks, mapping = masks_streams[stream_name]
+            input_data, output_data = self._get_data_windows(
+                idx, num_forecast_steps, self.max_input_steps, stream.readers
+            )
+            routes = [
+                name for name, members in self.encoder_streams.items() if stream_name in members
+            ]
+            input_tokens = {
+                level: self.tokenizers[level].get_tokens_windows(stream.info, input_data, True)
+                for level in {self.encoder_levels[name] for name in routes}
+            }
+            output_tokens = self.tokenizer.get_tokens_windows(stream.info, output_data, False)
+            for samples, modes, masks, is_source in (
+                (batch.source_samples, source_modes, source_masks, True),
+                (batch.target_samples, target_modes, target_masks, False),
+            ):
+                for view_idx, mask in enumerate(masks.masks):
+                    target_idx = int(mapping[view_idx]) if is_source else view_idx
+                    steps = samples.samples[view_idx].view_meta.params.get("num_steps_input", 1)
+                    physical = StreamData(idx, steps, output_steps, self.num_healpix_cells)
+                    self._build_stream_data_output(
+                        modes,
+                        physical,
+                        idx,
+                        stream.info,
+                        num_forecast_steps,
+                        output_data,
+                        output_tokens,
+                        target_masks.masks[target_idx],
+                    )
+                    # One canonical unmasked raw reference per physical stream/view.
+                    if is_source and self._stage != "train":
+                        physical.source_raw = [
+                            raw if not raw.is_spoof and not raw.is_empty() else None
+                            for raw in reversed(input_data[-steps:])
+                        ]
+                    if is_source:
+                        batch.add_source_stream(
+                            view_idx, target_idx, stream_name, physical, masks.metadata[view_idx]
+                        )
+                    else:
+                        batch.add_target_stream(
+                            view_idx,
+                            np.flatnonzero(mapping == view_idx).tolist(),
+                            stream_name,
+                            physical,
+                            masks.metadata[view_idx],
+                        )
+                    for name in routes:
+                        child = samples.encoder_batches[name]
+                        if "network_input" in modes:
+                            self._build_encoder_input(
+                                child,
+                                view_idx,
+                                stream_name,
+                                stream.info,
+                                idx,
+                                input_data,
+                                input_tokens[child.healpix_level],
+                                mask,
+                            )
+                        else:
+                            child.samples[view_idx].add_stream_data(
+                                stream_name, StreamData(idx, steps, 0, 12 * 4**child.healpix_level)
+                            )
+                        child.samples[view_idx].add_meta_info(
+                            stream_name, copy.deepcopy(masks.metadata[view_idx])
+                        )
+        return self._preprocess_model_batch(batch)
 
     def __iter__(self) -> ModelBatch:
         """

@@ -127,10 +127,11 @@ class StreamData:
         self.source_tokens_cells = _pin_tensor_list(self.source_tokens_cells)
         self.source_tokens_lens = _pin_tensor_list(self.source_tokens_lens)
         self.source_idxs_embed = _pin_tensor_list(self.source_idxs_embed)
+        self.source_idxs_embed_pe = _pin_tensor_list(self.source_idxs_embed_pe)
 
         return self
 
-    def to_device(self, device: str) -> None:
+    def to_device(self, device: str) -> "StreamData":
         """
         Move data to GPU
 
@@ -141,7 +142,7 @@ class StreamData:
 
         Returns
         -------
-        None
+        StreamData
         """
 
         dv = device
@@ -149,14 +150,13 @@ class StreamData:
         self.target_coords_lens = [t.to(dv, non_blocking=True) for t in self.target_coords_lens]
         self.target_tokens = [t.to(dv, non_blocking=True) for t in self.target_tokens]
 
-        # move to device if source data is present
-        if not np.array([s is None for s in self.source_tokens_cells]).all():
-            self.source_tokens_cells = [
-                s.to(dv, non_blocking=True) for s in self.source_tokens_cells
-            ]
-            self.source_tokens_lens = [s.to(dv, non_blocking=True) for s in self.source_tokens_lens]
-
-            self.source_idxs_embed = [s.to(dv, non_blocking=True) for s in self.source_idxs_embed]
+        # Missing input windows remain None; counts and indices still share the batch device.
+        self.source_tokens_cells = [
+            s.to(dv, non_blocking=True) if s is not None else None for s in self.source_tokens_cells
+        ]
+        self.source_tokens_lens = [s.to(dv, non_blocking=True) for s in self.source_tokens_lens]
+        self.source_idxs_embed = [s.to(dv, non_blocking=True) for s in self.source_idxs_embed]
+        self.source_idxs_embed_pe = [s.to(dv, non_blocking=True) for s in self.source_idxs_embed_pe]
 
         return self
 
@@ -364,9 +364,7 @@ class StreamData:
             True if target is empty for stream, else False
         """
 
-        return (
-            torch.tensor([s.sum() if len(s) > 0 else 0 for s in self.source_tokens_lens]).sum() == 0
-        )
+        return not any(bool(s.any()) for s in self.source_tokens_lens)
 
     def target_nan(self) -> bool:
         """
@@ -399,14 +397,23 @@ class StreamData:
             True if source is all NaN for stream, else False
         """
 
-        is_nan = torch.tensor(
-            [
-                torch.isnan(s.coords).all() or torch.isnan(s.data).all()
-                for s in self.source_raw
-                if s is not None
-            ]
-        )
-        return is_nan.all() if len(is_nan) > 0 else False
+        raw = [
+            s
+            for s, spoofed in zip(self.source_raw, self.source_is_spoof, strict=True)
+            if s is not None and not spoofed
+        ]
+        if raw:
+            return all(
+                bool(torch.isnan(torch.as_tensor(s.coords)).all())
+                or bool(torch.isnan(torch.as_tensor(s.data)).all())
+                for s in raw
+            )
+        tokens = [
+            s
+            for s, spoofed in zip(self.source_tokens_cells, self.source_is_spoof, strict=True)
+            if s is not None and s.numel() > 0 and not spoofed
+        ]
+        return bool(tokens) and all(bool(torch.isnan(s).all()) for s in tokens)
 
     def empty(self):
         """

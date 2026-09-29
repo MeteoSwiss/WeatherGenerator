@@ -7,27 +7,25 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-"""Unit tests for weathergen.utils.performance.
-
-Self-contained: no WeatherGenerator data structures required.
-Runs on CPU with small synthetic tensors.
-"""
+"""CPU throughput tests using real named encoder batches."""
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import torch
 
+from weathergen.datasets.batch import BatchSamples, ModelBatch
+from weathergen.datasets.stream_data import StreamData
 from weathergen.utils.performance import (
     ThroughputTracker,
     compute_source_bytes,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _no_cuda_sync():
@@ -36,35 +34,23 @@ def _no_cuda_sync():
         yield
 
 
-def _make_mock_source_samples(tensor_shapes: list[list[tuple]]):
-    """Build a minimal mock of the source_samples object.
-
-    tensor_shapes: list of samples, each a list of (shape,) tuples representing
-                   source_tokens_cells tensors per stream.
-    """
-
-    class StreamData:
-        def __init__(self, tensors):
-            self.source_tokens_cells = tensors
-
-    class Sample:
-        def __init__(self, tensor_shapes_per_stream):
-            self.streams_data = {
-                f"stream_{i}": StreamData([torch.zeros(shape)])
-                for i, shape in enumerate(tensor_shapes_per_stream)
-            }
-
-    class SourceSamples:
-        def __init__(self, samples):
-            self.samples = samples
-
-    return SourceSamples([Sample(shapes) for shapes in tensor_shapes])
+def _make_source_samples(tensor_shapes: list[list[tuple]]):
+    source = BatchSamples([], len(tensor_shapes), 1, [0])
+    child = BatchSamples([], len(tensor_shapes), 1, [0])
+    child.encoder_name = "default"
+    child.healpix_level = 0
+    for idx, (sample, shapes) in enumerate(zip(child.samples, tensor_shapes, strict=True)):
+        for stream_idx, shape in enumerate(shapes):
+            stream = StreamData(idx, 1, 1, 12)
+            stream.source_tokens_cells = [torch.zeros(shape)]
+            sample.streams_data[f"stream_{stream_idx}"] = stream
+    source.encoder_batches["default"] = child
+    return source
 
 
-def _make_mock_batch(source_samples):
-    """Create a mock batch whose get_source_samples() returns *source_samples*."""
-    batch = MagicMock()
-    batch.get_source_samples.return_value = source_samples
+def _make_batch(source_samples):
+    batch = ModelBatch([], len(source_samples), 0, 0, 1)
+    batch.source_samples = source_samples
     return batch
 
 
@@ -75,20 +61,42 @@ def _make_mock_batch(source_samples):
 
 def test_compute_source_bytes_single_stream():
     # 1 sample, 1 stream, 1 tensor shape (4, 8) float32 → 4×8×4 = 128 bytes
-    source = _make_mock_source_samples([[(4, 8)]])
+    source = _make_source_samples([[(4, 8)]])
     assert compute_source_bytes(source) == 128
 
 
 def test_compute_source_bytes_multiple_samples_and_streams():
     # 2 samples × 2 streams × 1 tensor (2, 4) float32 = 2×2×1×2×4×4 = 128 bytes
     shapes = [(2, 4), (2, 4)]  # 2 streams per sample
-    source = _make_mock_source_samples([shapes, shapes])  # 2 samples
+    source = _make_source_samples([shapes, shapes])  # 2 samples
     assert compute_source_bytes(source) == 128
 
 
 def test_compute_source_bytes_empty():
-    source = _make_mock_source_samples([])
+    source = _make_source_samples([])
     assert compute_source_bytes(source) == 0
+    assert compute_source_bytes(None) == 0
+
+
+def test_compute_source_bytes_named_routes_and_missing_inputs():
+    source = _make_source_samples([[(2, 4)], [(2, 4)]])
+    regional = BatchSamples(["stream_0", "missing"], 2, 1, [0])
+    regional.encoder_name = "regional"
+    regional.healpix_level = 2
+    for idx, sample in enumerate(regional.samples):
+        stream = StreamData(idx, 3, 1, 192)
+        stream.source_tokens_cells = [
+            torch.zeros((3, 4), dtype=torch.float16),
+            None,
+            torch.empty((0, 4)),
+        ]
+        sample.streams_data["stream_0"] = stream
+    source.encoder_batches["regional"] = regional
+    physical = StreamData(0, 1, 1, 12)
+    physical.source_tokens_cells = [torch.zeros(1000)]
+    source.samples[0].streams_data["stream_0"] = physical
+    # Default: 2 * 2 * 4 * 4; regional: 2 * 3 * 4 * 2. Physical copies excluded.
+    assert compute_source_bytes(source) == 112
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +181,8 @@ def test_throughput_values_positive(tracker):
 
 def test_step_calls_log_fn_on_root(tracker):
     """step() invokes log_fn with metrics on the root rank after warmup."""
-    source = _make_mock_source_samples([[(2, 2)]])
-    batch = _make_mock_batch(source)
+    source = _make_source_samples([[(2, 2)]])
+    batch = _make_batch(source)
 
     logged = {}
 
@@ -189,13 +197,15 @@ def test_step_calls_log_fn_on_root(tracker):
     with patch("weathergen.utils.performance.is_root", return_value=True):
         tracker.step(batch, istep=2, log_fn=log_fn)
 
-    assert "performance.throughput.device.batches_per_sec" in logged
+    assert logged["performance.throughput.device.mb_per_sec"] == pytest.approx(
+        logged["performance.throughput.device.batches_per_sec"] * 16 / 1e6
+    )
 
 
 def test_step_does_not_log_on_non_root(tracker):
     """step() does not invoke log_fn on non-root ranks."""
-    source = _make_mock_source_samples([[(2, 2)]])
-    batch = _make_mock_batch(source)
+    source = _make_source_samples([[(2, 2)]])
+    batch = _make_batch(source)
 
     logged = {}
 

@@ -19,12 +19,14 @@ import astropy_healpix.healpy
 import numpy as np
 import torch
 import torch.nn as nn
+from omegaconf import OmegaConf
+from torch.utils._pytree import register_pytree_node
 from torch.utils.checkpoint import checkpoint
 
-from weathergen.common.config import Config, get_healpix_level
-from weathergen.datasets.batch import ModelBatch
+from weathergen.common.config import Config, get_encoder_config, get_encoder_streams
+from weathergen.datasets.batch import BatchSamples
 from weathergen.datasets.utils import healpix_verts_rots, r3tos2
-from weathergen.model.encoder import EncoderModule
+from weathergen.model.encoder import EncoderModule, EncoderOutput
 from weathergen.model.engines import (
     BilinearDecoder,
     EnsPredictionHead,
@@ -38,7 +40,7 @@ from weathergen.model.engines import (
     TargetPredictionEngineClassic,
 )
 from weathergen.model.layers import MLP, NamedLinear
-from weathergen.model.utils import get_num_parameters
+from weathergen.model.utils import add_healpix_latents_, get_num_parameters
 from weathergen.utils.distributed import is_root
 from weathergen.utils.utils import get_dtype, is_stream_forcing
 
@@ -53,7 +55,7 @@ class ModelOutput:
     """
 
     physical: list[dict[StreamName, torch.Tensor]]
-    latent: list[dict[str, torch.Tensor | LatentState]]
+    latent: list[dict[str, typing.Any]]
 
     def __init__(self, len_output: int) -> None:
         self.physical = [{} for _ in range(len_output)]
@@ -64,7 +66,7 @@ class ModelOutput:
     ) -> None:
         self.physical[fstep][stream_name] = pred
 
-    def add_latent_prediction(self, fstep: int, latent_name: str, pred: torch.Tensor) -> None:
+    def add_latent_prediction(self, fstep: int, latent_name: str, pred: typing.Any) -> None:
         self.latent[fstep][latent_name] = pred
 
     def get_physical_prediction(
@@ -81,16 +83,29 @@ class ModelOutput:
     def get_latent_prediction(self, fstep: int):
         return self.latent[fstep]
 
+    @classmethod
+    def _unflatten(cls, values, context):
+        output = cls.__new__(cls)
+        output.physical, output.latent = values
+        return output
+
+
+register_pytree_node(
+    ModelOutput,
+    lambda output: ([output.physical, output.latent], None),
+    ModelOutput._unflatten,
+)
+
 
 class ModelParams(torch.nn.Module):
     """Creation of query and embedding parameters of the model."""
 
-    def __init__(self, cf) -> None:
+    def __init__(self, cf: Config, healpix_level: int) -> None:
         super(ModelParams, self).__init__()
 
         self.cf = cf
 
-        self.healpix_level = get_healpix_level(cf)
+        self.healpix_level = healpix_level
         self.num_healpix_cells = 12 * 4**self.healpix_level
         self.dtype = get_dtype(cf.attention_dtype)
 
@@ -113,9 +128,7 @@ class ModelParams(torch.nn.Module):
         self.rope_2D = cf.get("rope_2D", False)
         if self.rope_2D:
             self.num_extra_tokens = cf.num_register_tokens + cf.num_class_tokens
-            total_tokens = (
-                self.num_healpix_cells + self.num_extra_tokens
-            ) * cf.ae_local_num_queries
+            total_tokens = self.num_healpix_cells * cf.ae_local_num_queries + self.num_extra_tokens
             self.register_buffer(
                 "rope_coords",
                 torch.zeros(
@@ -209,7 +222,7 @@ class ModelParams(torch.nn.Module):
             self.rope_cell_coords.data.copy_(coords)
             coords = coords.unsqueeze(1).repeat(1, cf.ae_local_num_queries, 1)
             coords_flat = coords.flatten(0, 1).unsqueeze(0)
-            offset = self.num_extra_tokens * cf.ae_local_num_queries
+            offset = self.num_extra_tokens
             self.rope_coords.data.fill_(0.0)
             self.rope_coords.data[:, offset : offset + coords_flat.shape[1], :].copy_(coords_flat)
 
@@ -262,43 +275,35 @@ class ModelParams(torch.nn.Module):
         return
 
 
+def create_model_params(cf: Config) -> nn.ModuleDict:
+    """Build independent encoder geometry and the shared forecast/readout geometry."""
+    encoders = nn.ModuleDict()
+    for name in get_encoder_streams(cf):
+        scoped = get_encoder_config(cf, name)
+        encoders[name] = ModelParams(scoped, scoped.healpix_level).create(scoped)
+    forecast_cf = OmegaConf.merge(
+        cf,
+        {
+            "ae_local_dim_embed": cf.fe_dim_embed,
+            "ae_global_dim_embed": cf.fe_dim_embed,
+            "ae_local_num_queries": cf.fe_num_queries,
+        },
+    )
+    return nn.ModuleDict(
+        {
+            "encoders": encoders,
+            "forecast": ModelParams(forecast_cf, cf.fe_healpix_level).create(forecast_cf),
+        }
+    )
+
+
 class Model(torch.nn.Module):
-    """WeatherGenerator model architecture
+    """Named HEALPix encoders feeding one forecast state and shared prediction heads.
 
-    WeatherGenerator consists of the following components:
-
-    embeds: embedding networks: Stream specific embedding networks.
-
-    ae_local_blocks: Local assimilation engine: transformer based network to combine different input
-        streams per healpix cell.
-
-    ae_adapter: Assimilation engine adapter: Adapter to transform local assimilation engine
-        information to the global assimilation engine.
-
-    ae_aggregation_blocks: Query aggregation engine: after the learnable queries are created per
-        non-masked healpix cell, this engine combines information from all non-masked cells by
-        using dense attention layers.
-
-    ae_global_blocks: Global assimilation engine: Transformer network alternating between local and
-        global attention based upon global attention density rate.
-
-    fe_blocks: Forecasting engine: Transformer network using the output of global attention to
-        advance the latent representation in time.
-
-    embed_target_coords: Embedding networks for coordinates: Initializes embedding networks tailored
-        for metadata embedded target coordinates. The architecture is either a linear layer or a
-        multi-layer perceptron, determined by the configuration of the embedding target coordinate
-        networks.
-
-    pred_adapter_kv: Prediction adapter: Adapter to transform the global assimilation/forecasting
-        engine output to the prediction engine. Uses an MLP if `cf.pred_adapter_kv` is True,
-        otherwise it uses an identity function.
-
-    target_token_engines: Prediction engine: Transformer based prediction network that generates
-        output corresponding to target coordinates.
-
-    pred_heads: Prediction head: Final layers using target token engines output for mapping target
-        coordinates to its physical space.
+    Each encoder owns its input embedding and assimilation parameters. Its spatial
+    outputs are summed on the forecast grid before the shared rollout begins;
+    auxiliary tokens are added slotwise without spatial resampling. Physical
+    decoders and latent heads consume only that common forecast state.
     """
 
     def __init__(self, cf: Config, sources_size, targets_num_channels, targets_coords_size):
@@ -313,7 +318,8 @@ class Model(torch.nn.Module):
         """
         super(Model, self).__init__()
 
-        self.healpix_level = get_healpix_level(cf)
+        get_encoder_streams(cf)
+        self.healpix_level = cf.fe_healpix_level
         self.num_healpix_cells = 12 * 4**self.healpix_level
 
         self.cf = cf
@@ -323,10 +329,9 @@ class Model(torch.nn.Module):
         self.targets_coords_size = targets_coords_size
 
         self.embed_target_coords = None
-        self.encoder: EncoderModule | None = None
+        self.encoders = nn.ModuleDict()
         self.forecast_engine: ForecastingEngine | IdentityEngine | None = None
         self.pred_heads = None
-        self.q_cells: torch.Tensor | None = None
         self.streams: dict[str, typing.Any] = cf.streams
         self.target_token_engines = None
 
@@ -350,7 +355,7 @@ class Model(torch.nn.Module):
         if loss_cfg["head"].lower() == "mlp":
             return LatentPredictionHeadMLP(
                 name,
-                global_cfg.ae_global_dim_embed,
+                global_cfg.fe_dim_embed,
                 loss_cfg,
                 use_class_token=use_class_token,
                 use_patch_token=use_patch_token,
@@ -359,7 +364,7 @@ class Model(torch.nn.Module):
             return LatentPredictionHeadTransformer(
                 global_cfg,
                 name,
-                global_cfg.ae_global_dim_embed,
+                global_cfg.fe_dim_embed,
                 loss_cfg,
                 use_class_token=use_class_token,
                 use_patch_token=use_patch_token,
@@ -373,8 +378,16 @@ class Model(torch.nn.Module):
         """Create each individual module of the model"""
         cf = self.cf
 
-        self.encoder = EncoderModule(
-            cf, self.sources_size, self.targets_num_channels, self.targets_coords_size
+        source_sizes = dict(zip(self.streams, self.sources_size, strict=True))
+        self.encoders = nn.ModuleDict(
+            {
+                name: EncoderModule(
+                    get_encoder_config(cf, name),
+                    [source_sizes[stream] for stream in members],
+                    name,
+                )
+                for name, members in get_encoder_streams(cf).items()
+            }
         )
 
         mode_cfg = cf.training_config
@@ -451,7 +464,7 @@ class Model(torch.nn.Module):
                         tte = BilinearDecoder(
                             stream_name,
                             dims_embed[0],
-                            cf.ae_global_dim_embed,
+                            cf.fe_dim_embed,
                             self.targets_num_channels[i_stream],
                         )
                     else:
@@ -540,7 +553,7 @@ class Model(torch.nn.Module):
 
         # Latent heads for losses
         self.latent_heads = nn.ModuleDict()
-        self.latent_pre_norm = nn.LayerNorm(cf.ae_global_dim_embed)
+        self.latent_pre_norm = nn.LayerNorm(cf.fe_dim_embed)
 
         ssl_losses_cfgs = [
             v
@@ -551,7 +564,7 @@ class Model(torch.nn.Module):
         # TODO: support multiple LossLatentSSLStudentTeacher terms
         assert len(ssl_losses_cfgs) <= 1, "To be implemented."
         for ssl_target_losses in ssl_losses_cfgs:
-            self.latent_pre_norm = nn.LayerNorm(cf.ae_global_dim_embed)
+            self.latent_pre_norm = nn.LayerNorm(cf.fe_dim_embed)
             for loss, loss_conf in ssl_target_losses.loss_fcts.items():
                 if loss == "iBOT":
                     self.latent_heads[loss] = self._create_latent_pred_head(
@@ -592,27 +605,12 @@ class Model(torch.nn.Module):
     def print_num_parameters(self) -> None:
         """Print number of parameters for entire model and each module used to build the model"""
 
-        num_params_embed = [
-            get_num_parameters(self.encoder.embed_engine.embeds[name])
-            for name in self.streams.keys()
-        ]
         num_params_total = get_num_parameters(self)
-        num_params_ae_local = get_num_parameters(self.encoder.ae_local_engine.ae_local_blocks)
-        num_params_ae_global = get_num_parameters(self.encoder.ae_global_engine.ae_global_blocks)
-
-        num_params_q_cells = (
-            np.prod(self.encoder.q_cells.shape) if self.encoder.q_cells.requires_grad else 0
-        )
-        num_params_ae_adapter = get_num_parameters(self.encoder.ae_local_global_engine)
-
-        num_params_ae_aggregation = get_num_parameters(
-            self.encoder.ae_aggregation_engine.ae_aggregation_blocks
-        )
 
         num_params_latent_heads = get_num_parameters(self.latent_heads)
         num_params_latent_heads += get_num_parameters(self.latent_pre_norm)
 
-        num_params_fe = get_num_parameters(self.forecast_engine.fe_blocks)
+        num_params_fe = get_num_parameters(self.forecast_engine)
 
         mdict = self.embed_target_coords
         num_params_embed_tcs = [
@@ -633,16 +631,11 @@ class Model(torch.nn.Module):
         print("-----------------")
         print(f"Total number of trainable parameters: {num_params_total:,}")
         print("Number of parameters:")
-        print("  Embedding networks:")
-        [
-            print("    {} : {:,}".format(si["name"], np))
-            for si, np in zip(self.streams.values(), num_params_embed, strict=False)
-        ]
-        print(f" Local assimilation engine: {num_params_ae_local:,}")
-        print(f" Local-global adapter: {num_params_ae_adapter:,}")
-        print(f" Learnable queries: {num_params_q_cells:,}")
-        print(f" Query Aggregation engine: {num_params_ae_aggregation:,}")
-        print(f" Global assimilation engine: {num_params_ae_global:,}")
+        for name, encoder in self.encoders.items():
+            print(
+                f" Encoder {name} (HEALPix level {encoder.healpix_level}): "
+                f"{get_num_parameters(encoder):,}"
+            )
         print(f" Latent prediction heads and pre-norm: {num_params_latent_heads:,}")
         print(f" Forecast engine: {num_params_fe:,}")
         print(" coordinate embedding, prediction networks and prediction heads:")
@@ -669,7 +662,14 @@ class Model(torch.nn.Module):
             z_pre_norm=tokens,
         )
 
-    def forward(self, model_params: ModelParams, batch: ModelBatch) -> ModelOutput:
+    def encode(self, model_params: nn.ModuleDict, batch: BatchSamples) -> dict[str, EncoderOutput]:
+        """Encode each named input batch on its own grid, in configured order."""
+        return {
+            name: encoder(model_params["encoders"][name], batch.encoder_batches[name])
+            for name, encoder in self.encoders.items()
+        }
+
+    def forward(self, model_params: nn.ModuleDict, batch: BatchSamples) -> ModelOutput:
         """Forward pass of the model
 
         Tokens are processed through the model components, which were defined in the create method.
@@ -682,13 +682,28 @@ class Model(torch.nn.Module):
 
         output = ModelOutput(batch.get_output_len())
 
-        tokens, posteriors = self.encoder(model_params, batch)
-        output.add_latent_prediction(0, "posteriors", posteriors)
-
-        # recover batch dimension and separate input_steps
-        shape = (len(batch), batch.get_num_source_steps(), *tokens.shape[1:])
-        # collapse along input step dimension
-        tokens = tokens.reshape(shape).sum(axis=1)
+        encoded = self.encode(model_params, batch)
+        output.add_latent_prediction(
+            0, "posteriors", {name: branch.posteriors for name, branch in encoded.items()}
+        )
+        first = next(iter(encoded.values()))
+        patches = first.patch_tokens.new_zeros(
+            len(batch), self.num_healpix_cells, self.cf.fe_num_queries, self.cf.fe_dim_embed
+        )
+        auxiliary = first.auxiliary_tokens.new_zeros(
+            len(batch), self.num_aux_tokens, self.cf.fe_dim_embed
+        )
+        for branch in encoded.values():
+            add_healpix_latents_(
+                patches, branch.patch_tokens, branch.healpix_level, self.healpix_level
+            )
+            if branch.auxiliary_tokens.shape != auxiliary.shape:
+                raise ValueError("Encoder auxiliary slots must match the common forecast layout.")
+            auxiliary.add_(branch.auxiliary_tokens)
+        tokens = patches.flatten(1, 2)
+        if self.num_aux_tokens:
+            tokens = torch.cat((auxiliary, tokens), dim=1)
+        forecast_params = model_params["forecast"]
 
         # Allow for pushforward trick
         p_fwd = self.cf.training_config.get("forecast", {}).get("pushforward", False)
@@ -697,14 +712,14 @@ class Model(torch.nn.Module):
             without_grad = p_fwd and self.training and step != max(batch.get_output_idxs())
             if without_grad:
                 # Pushforward mode: advance tokens without grad; no decoding with torch.no_grad():
-                tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+                tokens = self.forecast_engine(tokens, step, forecast_params.rope_coords)
                 continue
 
-            tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+            tokens = self.forecast_engine(tokens, step, forecast_params.rope_coords)
             # decoder predictions
-            output = self.predict_decoders(model_params, step, tokens, batch, output)
+            output = self.predict_decoders(forecast_params, step, tokens, batch, output)
             # latent predictions (raw and with SSL heads)
-            output = self.predict_latent(model_params, step, tokens, batch, output)
+            output = self.predict_latent(forecast_params, step, tokens, batch, output)
 
         return output
 
@@ -713,15 +728,15 @@ class Model(torch.nn.Module):
         model_params: ModelParams,
         step: int,
         tokens: torch.Tensor,
-        batch: ModelBatch,
+        batch: BatchSamples,
         output: ModelOutput,
     ) -> ModelOutput:
         """
         Compute latent predictions
         """
 
-        # safe latent prediction
-        tokens_post_norm = self.latent_pre_norm(tokens) if step == 0 else None
+        # Heads also consume normalized features at forecast output steps.
+        tokens_post_norm = self.latent_pre_norm(tokens) if step == 0 or self.latent_heads else None
         latent_state = self.tokens_to_latent_state(tokens_post_norm, tokens)
         output.add_latent_prediction(step, "latent_state", latent_state)
 
@@ -736,7 +751,7 @@ class Model(torch.nn.Module):
         model_params: ModelParams,
         step: int,
         tokens: torch.Tensor,
-        batch: ModelBatch,
+        batch: BatchSamples,
         output: ModelOutput,
     ) -> ModelOutput:
         """
@@ -764,12 +779,15 @@ class Model(torch.nn.Module):
 
         # get 1-ring neighborhood for prediction
         batch_size = len(batch)
-        s = [batch_size, self.num_healpix_cells, self.cf.ae_local_num_queries, tokens.shape[-1]]
+        s = [batch_size, self.num_healpix_cells, self.cf.fe_num_queries, tokens.shape[-1]]
         idxs = model_params.hp_nbours.unsqueeze(0).repeat((batch_size, 1, 1)).flatten(0, 1)
         tokens_nbors = tokens.reshape(s).flatten(0, 1)[idxs.flatten()].flatten(0, 1)
         # TODO: precompute in model_params?
         tokens_nbors_lens = torch.full(
-            (s[0] * s[1] + 1,), fill_value=9, dtype=torch.int32, device=tokens_nbors.device
+            (s[0] * s[1] + 1,),
+            fill_value=9 * self.cf.fe_num_queries,
+            dtype=torch.int32,
+            device=tokens_nbors.device,
         )
         tokens_nbors_lens[0] = 0
 

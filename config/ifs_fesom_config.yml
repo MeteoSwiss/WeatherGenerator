@@ -1,10 +1,14 @@
 streams_directory: "./config/streams/fesom/"
 
-ae_local_num_queries: 2
-ae_adapter_embed: 128
-ae_local_dim_embed: 1024
-ae_local_num_blocks: 4
-ae_local_num_heads: 16
+encoders:
+  default:
+    ae_local_num_queries: 2
+    ae_adapter_embed: 128
+    ae_local_dim_embed: 1024
+    ae_local_num_blocks: 4
+    ae_local_num_heads: 16
+
+fe_num_queries: 2
 
 start_date: 2000-10-10T00:00
 end_date: 2199-12-31T00:00

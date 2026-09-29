@@ -40,10 +40,75 @@ _logger = logging.getLogger(__name__)
 Config = DictConfig
 
 
-def get_healpix_level(config: Config) -> int:
-    levels = {stream.healpix_level for stream in config.streams.values()}
-    assert len(levels) == 1, "All streams must use the same healpix_level."
-    return levels.pop()
+def get_encoder_streams(config: Config) -> dict[str, list[str]]:
+    """Validate the resolved encoder contract and retain physical stream order."""
+    from torch.nn import ModuleDict
+
+    encoders = config.get("encoders")
+    if not isinstance(encoders, dict | DictConfig) or not encoders:
+        raise ValueError("Define named encoders with healpix_level and per-encoder ae_* settings.")
+    if any(key.startswith("ae_") for key in config):
+        raise ValueError(
+            "Move top-level ae_* settings into encoders.<name>; legacy configs are unsupported."
+        )
+
+    def integer(value, name, minimum=0):
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}.")
+
+    integer(config.get("fe_healpix_level"), "fe_healpix_level")
+    integer(config.get("fe_dim_embed"), "fe_dim_embed", 1)
+    integer(config.get("fe_num_queries"), "fe_num_queries", 1)
+    module_names = dir(ModuleDict())
+    groups = {}
+    for name, encoder in encoders.items():
+        if not isinstance(name, str) or not name or "." in name or name in module_names:
+            raise ValueError(f"Invalid encoder module name: {name!r}.")
+        if not isinstance(encoder, dict | DictConfig):
+            raise ValueError(f"encoders.{name} must be a configuration mapping.")
+        integer(encoder.get("healpix_level"), f"encoders.{name}.healpix_level")
+        for key, common in (
+            ("ae_global_dim_embed", "fe_dim_embed"),
+            ("ae_local_num_queries", "fe_num_queries"),
+        ):
+            integer(encoder.get(key), f"encoders.{name}.{key}", 1)
+            if encoder[key] != config[common]:
+                raise ValueError(
+                    f"encoders.{name}.{key} must equal {common}; output adapters are not supported."
+                )
+        groups[name] = []
+
+    streams = config.get("streams")
+    if not isinstance(streams, dict | DictConfig):
+        raise ValueError("Load physical streams before resolving encoder membership.")
+    for stream_name, stream in streams.items():
+        if "healpix_level" in stream:
+            raise ValueError(
+                f"streams.{stream_name}.healpix_level is obsolete; levels belong to encoders."
+            )
+        memberships = stream.get("encoders")
+        if not isinstance(memberships, list | ListConfig):
+            raise ValueError(f"streams.{stream_name}.encoders must be a list (possibly empty).")
+        seen = set()
+        for name in memberships:
+            if not isinstance(name, str) or name not in groups:
+                raise ValueError(f"Stream {stream_name!r} references unknown encoder {name!r}.")
+            if name in seen:
+                raise ValueError(f"Stream {stream_name!r} repeats encoder {name!r}.")
+            seen.add(name)
+            groups[name].append(stream_name)
+    for name, members in groups.items():
+        if not members:
+            raise ValueError(f"Encoder {name!r} needs at least one member stream.")
+    return groups
+
+
+def get_encoder_config(config: Config, name: str) -> Config:
+    """Scope architecture and ordered streams to one independently weighted encoder."""
+    members = get_encoder_streams(config)[name]
+    scoped = OmegaConf.merge(config, config.encoders[name])
+    scoped.streams = {stream: config.streams[stream] for stream in members}
+    return scoped
 
 
 def parse_timedelta(val: str | int | float | np.timedelta64) -> np.timedelta64:
@@ -146,12 +211,11 @@ def _strip_interpolation(conf: Config) -> Config:
     stripped = {}
     if OmegaConf.is_dict(conf):
         for key in list(conf.keys()):
-            key = str(key)
             if OmegaConf.is_missing(conf, key):
                 val = "???"
             elif OmegaConf.is_config(conf[key]):
                 val = _strip_interpolation(conf[key])
-            elif key.startswith("_"):
+            elif str(key).startswith("_"):
                 continue  # Skip hidden/backup keys
             elif OmegaConf.is_interpolation(conf, key):
                 raw_key = f"_{key}"
@@ -163,7 +227,7 @@ def _strip_interpolation(conf: Config) -> Config:
             else:
                 val = conf[key]
 
-            stripped[key] = val
+            stripped[str(key)] = val
     elif OmegaConf.is_list(conf):
         stripped = [
             _strip_interpolation(item) if OmegaConf.is_config(item) else item for item in conf

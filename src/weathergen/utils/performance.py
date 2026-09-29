@@ -170,20 +170,18 @@ class NullThroughputTracker:
 
 
 def compute_source_bytes(source_samples) -> int:
-    """Count total bytes of all source token tensors in a batch.
-
-    Args:
-        source_samples: Result of sample_batch.get_source_samples(), containing
-                        a list of samples each with per-stream source token cells.
-
-    Returns:
-        Total byte count across all streams and cells in the batch.
-    """
+    """Count source token bytes across named encoder inputs, including overlapping routes."""
     total = 0
-    for sample in source_samples.samples:
-        for stream_data in sample.streams_data.values():
-            for t in stream_data.source_tokens_cells:
-                total += t.nbytes
+    if source_samples is None:
+        return total
+    for encoder_batch in source_samples.encoder_batches.values():
+        for sample in encoder_batch.samples:
+            for stream_data in sample.streams_data.values():
+                if stream_data is None:
+                    continue
+                for tensor in stream_data.source_tokens_cells:
+                    if tensor is not None:
+                        total += tensor.nbytes
     return total
 
 

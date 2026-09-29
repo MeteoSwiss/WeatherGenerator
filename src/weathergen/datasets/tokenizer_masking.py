@@ -12,8 +12,6 @@ import numpy as np
 import torch
 
 from weathergen.common.io import IOReaderData
-from weathergen.datasets.batch import SampleMetaData
-from weathergen.datasets.masking import Masker
 from weathergen.datasets.tokenizer import Tokenizer
 from weathergen.datasets.tokenizer_utils import (
     encode_times_source,
@@ -40,19 +38,6 @@ def readerdata_to_torch(rdata: IOReaderData) -> IOReaderData:
 
 
 class TokenizerMasking(Tokenizer):
-    def __init__(self, healpix_level: int, masker: Masker):
-        super().__init__(healpix_level)
-        self.masker = masker
-        self.rng = None
-        self.token_size = None
-
-    def reset_rng(self, rng) -> None:
-        """
-        Reset rng after mini_epoch to ensure proper randomization
-        """
-        self.masker.reset_rng(rng)
-        self.rng = rng
-
     def get_tokens_windows(self, stream_info, data, pad_tokens):
         """
         Tokenize data (to amortize over the different views that are generated)
@@ -77,17 +62,6 @@ class TokenizerMasking(Tokenizer):
             tokens += [(idxs_cells, idxs_cells_lens)]
 
         return tokens
-
-    def build_samples_for_stream(
-        self,
-        training_mode: str,
-        num_cells: int,
-        stream_info: dict,
-    ) -> tuple[np.typing.NDArray, list[np.typing.NDArray], list[SampleMetaData]]:
-        """
-        Create masks for samples
-        """
-        return self.masker.build_samples_for_stream(training_mode, num_cells, stream_info)
 
     def cell_to_token_mask(self, idxs_cells, idxs_cells_lens, mask):
         """ """
