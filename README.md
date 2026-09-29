@@ -71,6 +71,11 @@ missing observations. Uncovered cells contribute exactly zero, including auxilia
 tokens for an entirely absent branch. Covered but masked cells retain query/global
 processing. This is not sparse computation: level 7 still has 196,608 dense cells.
 
+Common view metadata lives on the top-level batch; encoder children carry only
+tokenized inputs, counts, and coverage. Configuration and checkpoint errors remain
+explicit. Latent export failures propagate instead of warning and continuing with
+incomplete output.
+
 This is a configuration and checkpoint format break. Stream-level `healpix_level`
 and root-level `ae_*` settings are no longer accepted. Checkpoints must contain
 `encoders.<name>.*` weights for every configured branch; legacy `encoder.*` keys

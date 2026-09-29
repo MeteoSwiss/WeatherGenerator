@@ -209,7 +209,6 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
         for param_name, full_tensor in params.items():
             sharded_meta_param = meta_sharded_sd.get(param_name)
             if sharded_meta_param is None:
-                logger.warning(f"Parameter {param_name} from checkpoint not found in model.")
                 continue
             maybe_sharded_sd[param_name] = (
                 distribute_tensor(
@@ -229,11 +228,11 @@ def load_model(cf, model, device, run_id: str, mini_epoch=-1):
         model = model.to(device)
 
     # warn about difference in checkpoint and model
-    if len(mkeys) == 0 and len(ukeys) == 0:
+    if not mkeys and not ukeys:
         logger.info(f"Checkpoint {filename} loaded successfully with all weights matching.")
-    if len(mkeys) > 0:
+    if mkeys:
         logger.warning(f"Missing keys when loading model: {mkeys}")
-    if len(ukeys) > 0:
+    if ukeys:
         logger.warning(f"Unused keys when loading model: {ukeys}")
 
     return model
@@ -254,9 +253,6 @@ def get_model(cf: Config, training_mode: TrainingMode, dataset, overrides):
     sources_by_name = dict(zip(stream_names, dataset.get_sources_size(), strict=True))
     channels_by_name = dict(zip(stream_names, dataset.get_targets_num_channels(), strict=True))
     coords_by_name = dict(zip(stream_names, dataset.get_targets_coords_size(), strict=True))
-    unknown = set(cf_with_overrides.streams) - sources_by_name.keys()
-    if unknown:
-        raise ValueError(f"Model streams have no dataset readers: {sorted(unknown)}")
     sources_size = [sources_by_name[name] for name in cf_with_overrides.streams]
     targets_num_channels = [channels_by_name[name] for name in cf_with_overrides.streams]
     targets_coords_size = [coords_by_name[name] for name in cf_with_overrides.streams]

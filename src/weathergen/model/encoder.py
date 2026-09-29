@@ -147,12 +147,8 @@ class EncoderModule(EncoderBase):
         self.q_cells.copy_(queries)
 
     def forward(self, model_params: ModelParams, batch: BatchSamples) -> EncoderOutput:
-        if batch.encoder_name != self.encoder_name or batch.healpix_level != self.healpix_level:
-            raise ValueError(f"Input batch does not match encoder {self.encoder_name!r}")
         num_steps, batch_size = batch.get_num_source_steps(), len(batch)
         coverage = batch.coverage
-        if coverage is None or coverage.shape != (num_steps, batch_size, self.num_healpix_cells):
-            raise ValueError(f"Invalid coverage axes for encoder {self.encoder_name!r}")
 
         dependency = None
         if self.sharded_training and self.training and torch.is_grad_enabled():

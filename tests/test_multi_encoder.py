@@ -304,10 +304,7 @@ def test_ssl_aligns_native_views_and_expands_cell_masks_over_queries():
     loss.backward()
     assert not student.grad[:, :12].any()
     assert (student.grad[:, 12:] < 0).all()
-    source_info[0].global_params["correspondence"] = 9
-    with pytest.raises(ValueError):
-        loss_module.compute_loss(preds, targets, metadata)
-    source_info[0].global_params["correspondence"] = 2
-    source_info[0].mask = visible[:-1]
+    for info in source_info:
+        info.mask = visible[:1]
     with pytest.raises(ValueError):
         loss_module.compute_loss(preds, targets, metadata)

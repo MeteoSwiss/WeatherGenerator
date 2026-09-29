@@ -40,22 +40,13 @@ class Sample:
     def pin_memory(self):
         """Pin all tensors in this Sample to CPU pinned memory"""
 
-        # Pin StreamData objects in streams_data dict
-        if hasattr(self, "streams_data") and isinstance(self.streams_data, dict):
-            for _stream_name, stream_data in self.streams_data.items():
-                if stream_data is not None and hasattr(stream_data, "pin_memory"):
-                    stream_data.pin_memory()
+        for stream in self.streams_data.values():
+            if stream is not None:
+                stream.pin_memory()
 
-        # Pin tensors in meta_info
-        if hasattr(self, "meta_info") and isinstance(self.meta_info, dict):
-            for _key, meta_data in self.meta_info.items():
-                if isinstance(meta_data, SampleMetaData):
-                    # Pin mask tensor
-                    if meta_data.mask is not None and isinstance(meta_data.mask, torch.Tensor):
-                        meta_data.mask = meta_data.mask.pin_memory()
-
-        if self.view_meta is not None and self.view_meta.mask is not None:
-            self.view_meta.mask = self.view_meta.mask.pin_memory()
+        for metadata in (*self.meta_info.values(), self.view_meta):
+            if metadata is not None and metadata.mask is not None:
+                metadata.mask = metadata.mask.pin_memory()
 
         return self
 
@@ -63,45 +54,34 @@ class Sample:
         self.meta_info = {}
         self.view_meta = None
 
-        self.streams_data = {}
-        for stream_name in stream_names:
-            self.streams_data[stream_name] = None
+        self.streams_data = dict.fromkeys(stream_names)
 
     def to_device(self, device) -> None:
-        for key in self.meta_info.keys():
-            self.meta_info[key].mask = (
-                self.meta_info[key].mask.to(device, non_blocking=True)
-                if self.meta_info[key].mask is not None
-                else None
-            )
+        for metadata in (*self.meta_info.values(), self.view_meta):
+            if metadata is not None and metadata.mask is not None:
+                metadata.mask = metadata.mask.to(device, non_blocking=True)
 
-        if self.view_meta is not None and self.view_meta.mask is not None:
-            self.view_meta.mask = self.view_meta.mask.to(device, non_blocking=True)
-
-        for key, val in self.streams_data.items():
-            if val is not None:
-                self.streams_data[key] = val.to_device(device)
+        for stream in self.streams_data.values():
+            if stream is not None:
+                stream.to_device(device)
 
     def is_empty(self) -> bool:
         """
         Check if sample is empty
         """
-        empty = [s.empty() if s is not None else True for _, s in self.streams_data.items()]
-        return np.array(empty).all()
+        return all(s is None or s.empty() for s in self.streams_data.values())
 
     def is_nan(self) -> bool:
         """
         Check if sample is all NaN
         """
-        is_nan = [s.nan() if s is not None else False for _, s in self.streams_data.items()]
-        return np.array(is_nan).all()
+        return all(s is not None and s.nan() for s in self.streams_data.values())
 
     def sources_empty(self) -> bool:
         """
         Check if sources for sample are empty
         """
-        empty = [s.source_empty() if s is not None else True for _, s in self.streams_data.items()]
-        return np.array(empty).all()
+        return all(s is None or s.source_empty() for s in self.streams_data.values())
 
     def sources_nan(self) -> bool:
         """
@@ -114,21 +94,18 @@ class Sample:
         """
         Check if targets for sample are empty
         """
-        empty = [s.target_empty() if s is not None else True for _, s in self.streams_data.items()]
-        return np.array(empty).all()
+        return all(s is None or s.target_empty() for s in self.streams_data.values())
 
     def targets_nan(self) -> bool:
         """
         Check if targets for sample are all NaN
         """
-        is_nan = [s.target_nan() if s is not None else False for _, s in self.streams_data.items()]
-        return np.array(is_nan).all()
+        return all(s is not None and s.target_nan() for s in self.streams_data.values())
 
     def add_stream_data(self, stream_name: str, stream_data: StreamData) -> None:
         """
         Add data for stream @stream_name to sample
         """
-        assert self.streams_data.get(stream_name, -1) != -1, "stream name does not exist"
         self.streams_data[stream_name] = stream_data
 
     def add_meta_info(self, stream_name: str, meta_info: SampleMetaData) -> None:
@@ -141,30 +118,21 @@ class Sample:
         """
         Get data for stream @stream_name from sample
         """
-        assert self.streams_data.get(stream_name, -1) != -1, "stream name does not exist"
         return self.streams_data[stream_name]
 
     def get_num_source_steps(self) -> int:
-        """
-        Get number of source steps from smallest of all available streams
-        """
-        lens = [
-            stream.get_num_source_steps()
-            for _, stream in self.streams_data.items()
-            if stream is not None
-        ]
-        return min(lens) if len(lens) > 0 else 0
+        """Get the minimum input length among available streams."""
+        return min(
+            (s.get_num_source_steps() for s in self.streams_data.values() if s is not None),
+            default=0,
+        )
 
     def get_num_target_steps(self) -> int:
-        """
-        Get number of target steps from smallest of all available streams
-        """
-        lens = [
-            stream.get_num_target_steps()
-            for _, stream in self.streams_data.items()
-            if stream is not None
-        ]
-        return min(lens) if len(lens) > 0 else 0
+        """Get the minimum target length among available streams."""
+        return min(
+            (s.get_num_target_steps() for s in self.streams_data.values() if s is not None),
+            default=0,
+        )
 
 
 class BatchSamples:
@@ -198,9 +166,8 @@ class BatchSamples:
         for sample in self.samples:
             sample.to_device(device)
 
-        self.tokens_lens = (
-            self.tokens_lens.to(device, non_blocking=True) if self.tokens_lens is not None else None
-        )
+        if self.tokens_lens is not None:
+            self.tokens_lens = self.tokens_lens.to(device, non_blocking=True)
         if self.coverage is not None:
             self.coverage = self.coverage.to(device, non_blocking=True)
         for child in self.encoder_batches.values():
@@ -216,14 +183,12 @@ class BatchSamples:
     def get_subset(self, subset: list | None = None):
         if subset is None:
             return self
-        assert len(set(subset)) == len(subset), "subset contains duplicates"
         bs = copy.copy(self)
         bs.samples = copy.deepcopy([self.samples[i] for i in subset])
-        for name in ("tokens_lens", "coverage"):
-            tensor = getattr(self, name)
-            if tensor is not None:
-                indices = torch.tensor(subset, dtype=torch.long, device=tensor.device)
-                setattr(bs, name, torch.index_select(tensor, 1, indices))
+        if self.tokens_lens is not None:
+            bs.tokens_lens = self.tokens_lens[:, subset]
+        if self.coverage is not None:
+            bs.coverage = self.coverage[:, subset]
         bs.encoder_batches = {
             name: child.get_subset(subset) for name, child in self.encoder_batches.items()
         }
@@ -272,13 +237,13 @@ class BatchSamples:
         if self.coverage is not None:
             # Coverage precedes training masking: learned queries remain valid when fully masked.
             return not bool(self.coverage.any())
-        return np.array([s.sources_empty() if s is not None else True for s in self.samples]).all()
+        return all(s.sources_empty() for s in self.samples)
 
     def targets_empty(self) -> bool:
         """
         Check if targets for all samples are empty
         """
-        return np.array([s.targets_empty() if s is not None else True for s in self.samples]).all()
+        return all(s.targets_empty() for s in self.samples)
 
     def sources_nan(self) -> bool:
         """
@@ -289,24 +254,22 @@ class BatchSamples:
                 child for child in self.encoder_batches.values() if not child.sources_empty()
             ]
             return bool(children) and all(child.sources_nan() for child in children)
-        samples = [s for s in self.samples if s is not None and not s.sources_empty()]
+        samples = [s for s in self.samples if not s.sources_empty()]
         return bool(samples) and all(s.sources_nan() for s in samples)
 
     def targets_nan(self) -> bool:
         """
         Check if targets for all samples are all NaN
         """
-        return np.array([s.targets_nan() if s is not None else False for s in self.samples]).all()
+        return all(s.targets_nan() for s in self.samples)
 
     def pin_memory(self):
         """Pin all tensors in this batch to CPU pinned memory"""
 
-        # pin all samples
         for sample in self.samples:
             sample.pin_memory()
 
-        # pin source_tokens_lens
-        if isinstance(self.tokens_lens, torch.Tensor):
+        if self.tokens_lens is not None:
             self.tokens_lens = self.tokens_lens.pin_memory()
         if self.coverage is not None:
             self.coverage = self.coverage.pin_memory()
@@ -403,7 +366,6 @@ class ModelBatch:
         # add the meta_info
         self.source_samples.samples[source_sample_idx].add_meta_info(stream_name, source_meta_info)
 
-        assert target_sample_idx < len(self.target_samples), "invalid value for target_sample_idx"
         self.source2target_matching_idxs[source_sample_idx] = target_sample_idx
 
     def add_target_stream(
@@ -422,14 +384,6 @@ class ModelBatch:
         # add the meta_info -- for target we have different
         self.target_samples.samples[target_sample_idx].add_meta_info(stream_name, target_meta_info)
 
-        if isinstance(source_sample_idx, int):
-            assert source_sample_idx < len(self.source_samples), (
-                "invalid value for source_sample_idx"
-            )
-        else:
-            assert all(idx < len(self.source_samples) for idx in source_sample_idx), (
-                "invalid value for source_sample_idx"
-            )
         self.target2source_matching_idxs[target_sample_idx] = source_sample_idx
 
     def is_empty(self):

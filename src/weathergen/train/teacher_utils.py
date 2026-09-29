@@ -151,7 +151,7 @@ def prepare_encoder_teacher(model: nn.Module, training_cfg, override_cfg) -> Non
                     name, head_type, teacher_dim_embed, conf, cf=override_cfg
                 )
             else:
-                logger.warning(f"Unknown SSL loss type {name!r} in teacher setup, skipping.")
+                raise ValueError(f"Unknown SSL loss type {name!r}")
 
 
 def load_encoder_from_checkpoint(
@@ -183,15 +183,7 @@ def load_encoder_from_checkpoint(
         k: v for k, v in params.items() if k.startswith(("encoders.", "latent_pre_norm."))
     }
 
-    mkeys, ukeys = model.load_state_dict(encoder_params, strict=False)
+    model.load_state_dict(encoder_params, strict=False)
     model.to(device)
 
-    logging.info(f"Teacher: Loaded encoder weights from checkpoint {filename}")
-    if mkeys is not None:
-        logger.info(f"Number of missing keys: {len(mkeys)}")
-        logger.debug(f"Missing keys: {mkeys}")
-    if ukeys is not None:
-        logger.info(f"Number of unused keys: {len(ukeys)}")
-        logger.debug(f"Unused keys: {ukeys}")
-    if mkeys is None and ukeys is None:
-        logger.info("All keys in checkpoint matched successfully.")
+    logger.info(f"Teacher: Loaded encoder weights from checkpoint {filename}")

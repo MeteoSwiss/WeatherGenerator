@@ -413,7 +413,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         for step in range(steps):
             raw = input_data[-(step + 1)]
             indices, lengths = input_tokens[-(step + 1)]
-            if raw.is_spoof or raw.is_empty() or raw.data.shape[-1] == 0 or indices is None:
+            if raw.is_spoof or raw.is_empty() or raw.data.shape[-1] == 0:
                 continue
             coverage = torch.tensor([len(cell) > 0 for cell in lengths], dtype=torch.bool)
             child.coverage[step, view_idx] |= coverage
@@ -425,7 +425,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             )
             data.add_source(self._stage, step, None, counts, cells, False)
         child.samples[view_idx].add_stream_data(stream_name, data)
-        return data
 
     def _build_stream_data_output(
         self,
@@ -607,8 +606,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             if len(steps) != 1 or min(steps) < 1:
                 raise ValueError("Input steps must be positive and constant across views per side")
             steps = steps.pop()
-            if len(configs) != len(samples):
-                raise ValueError("Common view configuration does not match generated views")
             for sample, cfg, metadata in zip(samples.samples, configs, masks.metadata, strict=True):
                 sample.view_meta = SampleMetaData(
                     params=copy.deepcopy(cfg),
@@ -623,8 +620,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                     steps, len(samples), 12 * 4**child.healpix_level, dtype=torch.bool
                 )
                 samples.encoder_batches[name] = child
-                for sample, parent in zip(child.samples, samples.samples, strict=True):
-                    sample.view_meta = copy.deepcopy(parent.view_meta)
 
         for stream_name, stream in self.streams_datasets.items():
             target_masks, source_masks, mapping = masks_streams[stream_name]
@@ -692,9 +687,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                             child.samples[view_idx].add_stream_data(
                                 stream_name, StreamData(idx, steps, 0, 12 * 4**child.healpix_level)
                             )
-                        child.samples[view_idx].add_meta_info(
-                            stream_name, copy.deepcopy(masks.metadata[view_idx])
-                        )
         return self._preprocess_model_batch(batch)
 
     def __iter__(self) -> ModelBatch:

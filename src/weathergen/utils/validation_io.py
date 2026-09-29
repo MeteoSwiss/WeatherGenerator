@@ -205,17 +205,19 @@ def write_output(
 
 
 def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
-    """Write latent data directly to zarr store.
-
-    This bypasses OutputItem validation which incorrectly requires source datasets
-    for latent-only items.
-
-    Also writes coordinate and time metadata using config healpix coordinates.
-    """
-    # Calculate sample start index for this batch
+    """Write dense forecast-grid latents, bypassing physical OutputItem validation."""
     sample_start = batch_idx * batch_size
+    num_register_tokens = cf.num_register_tokens
+    num_class_tokens = cf.num_class_tokens
+    num_extra_tokens = num_register_tokens + num_class_tokens
+    num_queries = cf.fe_num_queries
+    coords_len = 12 * 4**cf.fe_healpix_level
+    spatial_tokens = coords_len * num_queries
+    lon, lat = _get_healpix_coords(cf)
+    coords_array = np.stack([lat, lon], axis=1).astype(np.float32)
+    geoinfo_array = np.zeros((coords_len, 0), dtype=np.float32)
+    times_array = np.full((coords_len,), np.datetime64("NaT"), dtype="datetime64[ns]")
 
-    # Iterate over latent data
     for t_idx, latents_in_step in enumerate(data.latents):
         for sample_idx_in_batch, latents_in_sample in enumerate(latents_in_step):
             if not latents_in_sample:
@@ -227,127 +229,67 @@ def _write_latent_data_to_zarr(zio, data, cf, batch, batch_idx, batch_size):
             # Reserve latent step 0 for the initial encoded state.
             group_path = f"{global_sample_idx}/{io.LATENT_STREAM}/{t_idx + 1}"
 
-            npoints = _infer_latent_points_for_metadata(latents_in_sample)
-            (
-                coords_array,
-                geoinfo_array,
-                times_array,
-                coords_len,
-                num_register_tokens,
-                num_class_tokens,
-            ) = _build_latent_metadata(cf, batch, sample_idx_in_batch, npoints)
-            # Collect all attributes upfront so they can be passed to
-            # create_group in a single call.  Setting attrs individually
-            # after creation causes duplicate zarr.json entries in ZipStore.
-            group_attrs: dict[str, int | str] = {}
-            if coords_array is not None and times_array is not None:
-                group_attrs = {
-                    "num_extra_tokens": int(num_register_tokens + num_class_tokens),
-                    "num_register_tokens": int(num_register_tokens),
-                    "num_class_tokens": int(num_class_tokens),
-                    "spatial_points": int(coords_array.shape[0]),
-                    "coords_order": "lat_lon",
-                    "num_queries": int(cf.fe_num_queries),
-                }
-                if npoints is not None:
-                    group_attrs["total_points"] = int(npoints)
+            # ZipStore needs all attributes at creation to avoid duplicate zarr.json entries.
+            group_attrs = {
+                "num_extra_tokens": int(num_extra_tokens),
+                "num_register_tokens": int(num_register_tokens),
+                "num_class_tokens": int(num_class_tokens),
+                "spatial_points": int(coords_len),
+                "coords_order": "lat_lon",
+                "num_queries": int(num_queries),
+            }
+            for name in ("tokens", "latent_state", "z_pre_norm", "patch_tokens"):
+                if name in latents_in_sample:
+                    group_attrs["total_points"] = int(np.asarray(latents_in_sample[name]).shape[0])
+                    break
 
-            # Create or get group (avoid duplicate entries in ZipStore)
             group = zio.data_root.get(group_path)
             if group is None:
                 group = zio.data_root.create_group(group_path, attributes=group_attrs)
-            else:
-                _logger.debug(f"Latent group already exists at {group_path}, skipping creation.")
-            extra_written = False
             latent_names = {_latent_output_name(name) for name in latents_in_sample}
             for latent_name, latent_data in latents_in_sample.items():
                 latent_array = np.asarray(latent_data)
                 output_name = _latent_output_name(latent_name)
-                extra_components, latent_array = _split_extra_tokens(
-                    latent_name,
-                    latent_array,
-                    coords_len * cf.fe_num_queries if coords_len is not None else None,
-                    num_register_tokens,
-                    num_class_tokens,
-                )
-                if extra_components is not None and not extra_written:
-                    for extra_name, extra_array in extra_components.items():
-                        if extra_name in latent_names:
-                            continue
-                        _write_array(group, extra_name, extra_array)
-                        _logger.debug(
-                            f"Wrote {extra_name} shape {extra_array.shape} "
-                            f"for sample {global_sample_idx}"
-                        )
-                    extra_written = True
-                if coords_len is not None and latent_array.ndim >= 2:
-                    spatial_tokens = coords_len * cf.fe_num_queries
-                    if (
-                        output_name not in ("tokens", "class_token", "register_tokens")
-                        and num_class_tokens
-                        and latent_array.shape[0] == spatial_tokens + num_class_tokens
-                    ):
-                        _write_array(
-                            group,
-                            f"{output_name}_class_token",
-                            latent_array[:num_class_tokens],
-                        )
-                        latent_array = latent_array[num_class_tokens:]
-                    if (
-                        output_name not in ("class_token", "register_tokens")
-                        and cf.fe_num_queries > 1
-                        and latent_array.shape[0] == spatial_tokens
-                    ):
-                        latent_array = latent_array.reshape(
-                            coords_len, cf.fe_num_queries, *latent_array.shape[1:]
-                        )
-
-                try:
-                    _write_array(group, output_name, latent_array)
-                    _logger.debug(
-                        f"Wrote latent {output_name} shape {latent_array.shape} "
-                        f"for sample {global_sample_idx}"
+                if (
+                    output_name == "tokens"
+                    and latent_array.shape[0] == spatial_tokens + num_extra_tokens
+                ):
+                    registers, classes, latent_array = np.split(
+                        latent_array, [num_register_tokens, num_extra_tokens]
                     )
-                except Exception as e:
-                    _logger.warning(
-                        f"Failed to write latent {output_name} for sample {global_sample_idx}: {e}"
+                    # Prefer explicitly supplied normalized auxiliary fields over raw prefixes.
+                    for name, array in (("register_tokens", registers), ("class_token", classes)):
+                        if name not in latent_names:
+                            _write_array(group, name, array)
+                elif (
+                    output_name not in ("tokens", "class_token", "register_tokens")
+                    and num_class_tokens
+                    and latent_array.shape[0] == spatial_tokens + num_class_tokens
+                ):
+                    _write_array(
+                        group, f"{output_name}_class_token", latent_array[:num_class_tokens]
                     )
+                    latent_array = latent_array[num_class_tokens:]
 
-            if coords_array is not None and times_array is not None:
-                _write_array(group, "coords", coords_array)
-                _logger.debug(
-                    f"Wrote coords shape {coords_array.shape} for sample {global_sample_idx}"
-                )
-                _write_array(group, "geoinfo", geoinfo_array)
-                _logger.debug(
-                    f"Wrote geoinfo shape {geoinfo_array.shape} for sample {global_sample_idx}"
-                )
-                _write_array(group, "times", times_array)
-                _logger.debug(
-                    f"Wrote times shape {times_array.shape} for sample {global_sample_idx}"
-                )
+                if (
+                    output_name not in ("class_token", "register_tokens")
+                    and num_queries > 1
+                    and latent_array.shape[0] == spatial_tokens
+                ):
+                    latent_array = latent_array.reshape(
+                        coords_len, num_queries, *latent_array.shape[1:]
+                    )
+                _write_array(group, output_name, latent_array)
 
-
-def _infer_latent_points_for_metadata(latents_for_sample: dict) -> int | None:
-    """
-    Infer sequence length from an unambiguous spatial or full-state output.
-    Head-only outputs can contain class tokens, so do not infer from arbitrary heads.
-    """
-    preferred_keys = ("tokens", "latent_state", "z_pre_norm", "patch_tokens")
-    for key in preferred_keys:
-        if key in latents_for_sample:
-            arr = np.asarray(latents_for_sample[key])
-            if arr.ndim >= 1:
-                return arr.shape[0]
-    return None
+            _write_array(group, "coords", coords_array)
+            _write_array(group, "geoinfo", geoinfo_array)
+            _write_array(group, "times", times_array)
 
 
 def _write_array(group, name: str, data: npt.NDArray) -> None:
-    if name in group:
-        # ZipStore cannot truly delete; overwriting creates duplicate entries.
-        _logger.debug(f"Array {name} already exists in group, skipping write.")
-        return
-    group.create_array(name, data=data)
+    # ZipStore cannot truly delete; overwriting creates duplicate entries.
+    if name not in group:
+        group.create_array(name, data=data)
 
 
 def _latent_output_name(name: str) -> str:
@@ -358,35 +300,10 @@ def _latent_output_name(name: str) -> str:
     }.get(name, name)
 
 
-def _split_extra_tokens(
-    latent_name: str,
-    latent_array: npt.NDArray,
-    coords_len: int | None,
-    num_register_tokens: int,
-    num_class_tokens: int,
-) -> tuple[dict[str, npt.NDArray] | None, npt.NDArray]:
-    num_extra_tokens = num_register_tokens + num_class_tokens
-    if (
-        coords_len is not None
-        and latent_array.ndim >= 1
-        and latent_array.shape[0] == coords_len + num_extra_tokens
-        and latent_name in ("latent_state", "tokens")
-    ):
-        extra_components: dict[str, npt.NDArray] = {}
-        offset = 0
-        extra_components["register_tokens"] = latent_array[offset : offset + num_register_tokens]
-        offset += num_register_tokens
-        extra_components["class_token"] = latent_array[offset : offset + num_class_tokens]
-        return extra_components, latent_array[num_extra_tokens:]
-    return None, latent_array
-
-
 _HEALPIX_COORDS_CACHE: dict[int, tuple[npt.NDArray, npt.NDArray]] = {}
 
 
-def _get_healpix_coords(cf) -> tuple[npt.NDArray, npt.NDArray] | None:
-    if cf is None:
-        return None
+def _get_healpix_coords(cf) -> tuple[npt.NDArray, npt.NDArray]:
     healpix_level = cf.fe_healpix_level
     cached = _HEALPIX_COORDS_CACHE.get(healpix_level)
     if cached is not None:
@@ -398,47 +315,6 @@ def _get_healpix_coords(cf) -> tuple[npt.NDArray, npt.NDArray] | None:
     coords = (lon.to_value("deg"), lat.to_value("deg"))
     _HEALPIX_COORDS_CACHE[healpix_level] = coords
     return coords
-
-
-def _build_latent_metadata(cf, batch, sample_idx_in_batch, npoints):
-    num_register_tokens = int(cf.get("num_register_tokens", 0))
-    num_class_tokens = int(cf.get("num_class_tokens", 0))
-    num_extra_tokens = num_register_tokens + num_class_tokens
-
-    healpix_coords = _get_healpix_coords(cf)
-    if healpix_coords is None or len(healpix_coords) != 2:
-        return None, None, None, None, num_register_tokens, num_class_tokens
-
-    lon, lat = healpix_coords
-    coords_base = np.stack([lat, lon], axis=1)
-
-    if batch is not None and sample_idx_in_batch < len(batch.get_source_samples().get_samples()):
-        sample = batch.get_source_samples().get_samples()[sample_idx_in_batch]
-        if sample.view_meta is None or sample.view_meta.mask is None:
-            raise ValueError("Latent export requires common-grid view metadata.")
-        if sample.view_meta.mask.numel() != coords_base.shape[0]:
-            raise ValueError("Latent view metadata does not match fe_healpix_level.")
-
-    coords_len = coords_base.shape[0]
-    spatial_tokens = coords_len * cf.fe_num_queries
-    if npoints is not None and npoints not in (
-        coords_len,
-        spatial_tokens,
-        spatial_tokens + num_extra_tokens,
-    ):
-        raise ValueError("Latent token count does not match the forecast grid and query count.")
-
-    coords_array = coords_base.astype(np.float32)
-    geoinfo_array = np.zeros((coords_len, 0), dtype=np.float32)
-    times_array = np.full((coords_len,), np.datetime64("NaT"), dtype="datetime64[ns]")
-    return (
-        coords_array,
-        geoinfo_array,
-        times_array,
-        coords_len,
-        num_register_tokens,
-        num_class_tokens,
-    )
 
 
 def get_latent_output(batch, model_output):

@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import torch
@@ -28,8 +27,6 @@ from weathergen.train.teacher_utils import (
     load_encoder_from_checkpoint,
     prepare_encoder_teacher,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class EncoderTeacher(TargetAndAuxModuleBase):
@@ -186,9 +183,6 @@ def get_target_postprocessing(
     return_dict = {}
     for loss_name, conf in target_losses.items():
         if loss_name == "iBOT":
-            for key in ("out_dim", "center_momentum", "teacher_temp", "teacher_style"):
-                if key not in conf:
-                    raise KeyError(f"iBOT config missing required key {key!r}")
             return_dict[loss_name] = iBOTPatchTargetProcessing(
                 patch_out_dim=conf["out_dim"],
                 center_momentum=conf["center_momentum"],
@@ -197,9 +191,6 @@ def get_target_postprocessing(
                 teacher_style=conf["teacher_style"],
             )
         elif loss_name == "DINO":
-            for key in ("out_dim", "center_momentum", "teacher_style"):
-                if key not in conf:
-                    raise KeyError(f"DINO config missing required key {key!r}")
             return_dict[loss_name] = DINOTargetProcessing(
                 out_dim=conf["out_dim"],
                 center_momentum=conf["center_momentum"],
@@ -209,7 +200,5 @@ def get_target_postprocessing(
         elif loss_name == "JEPA":
             return_dict[loss_name] = JEPATargetProcessing()
         else:
-            # We skip losses that are not handled by the teacher
-            logger.debug(f"Skipping unknown loss type {loss_name!r} in target postprocessing")
-            continue
+            raise ValueError(f"Unknown SSL loss type {loss_name!r}")
     return return_dict

@@ -42,10 +42,8 @@ Config = DictConfig
 
 def get_encoder_streams(config: Config) -> dict[str, list[str]]:
     """Validate the resolved encoder contract and retain physical stream order."""
-    from torch.nn import ModuleDict
-
     encoders = config.get("encoders")
-    if not isinstance(encoders, dict | DictConfig) or not encoders:
+    if not encoders:
         raise ValueError("Define named encoders with healpix_level and per-encoder ae_* settings.")
     if any(key.startswith("ae_") for key in config):
         raise ValueError(
@@ -59,29 +57,17 @@ def get_encoder_streams(config: Config) -> dict[str, list[str]]:
     integer(config.get("fe_healpix_level"), "fe_healpix_level")
     integer(config.get("fe_dim_embed"), "fe_dim_embed", 1)
     integer(config.get("fe_num_queries"), "fe_num_queries", 1)
-    module_names = dir(ModuleDict())
     groups = {}
     for name, encoder in encoders.items():
-        if not isinstance(name, str) or not name or "." in name or name in module_names:
-            raise ValueError(f"Invalid encoder module name: {name!r}.")
-        if not isinstance(encoder, dict | DictConfig):
-            raise ValueError(f"encoders.{name} must be a configuration mapping.")
         integer(encoder.get("healpix_level"), f"encoders.{name}.healpix_level")
-        for key, common in (
-            ("ae_global_dim_embed", "fe_dim_embed"),
-            ("ae_local_num_queries", "fe_num_queries"),
+        if (encoder.ae_global_dim_embed, encoder.ae_local_num_queries) != (
+            config.fe_dim_embed,
+            config.fe_num_queries,
         ):
-            integer(encoder.get(key), f"encoders.{name}.{key}", 1)
-            if encoder[key] != config[common]:
-                raise ValueError(
-                    f"encoders.{name}.{key} must equal {common}; output adapters are not supported."
-                )
+            raise ValueError(f"Encoder {name!r} must match fe_dim_embed and fe_num_queries.")
         groups[name] = []
 
-    streams = config.get("streams")
-    if not isinstance(streams, dict | DictConfig):
-        raise ValueError("Load physical streams before resolving encoder membership.")
-    for stream_name, stream in streams.items():
+    for stream_name, stream in config.streams.items():
         if "healpix_level" in stream:
             raise ValueError(
                 f"streams.{stream_name}.healpix_level is obsolete; levels belong to encoders."
@@ -89,13 +75,11 @@ def get_encoder_streams(config: Config) -> dict[str, list[str]]:
         memberships = stream.get("encoders")
         if not isinstance(memberships, list | ListConfig):
             raise ValueError(f"streams.{stream_name}.encoders must be a list (possibly empty).")
-        seen = set()
+        if len(memberships) != len(set(memberships)):
+            raise ValueError(f"Stream {stream_name!r} repeats an encoder.")
         for name in memberships:
-            if not isinstance(name, str) or name not in groups:
+            if name not in groups:
                 raise ValueError(f"Stream {stream_name!r} references unknown encoder {name!r}.")
-            if name in seen:
-                raise ValueError(f"Stream {stream_name!r} repeats encoder {name!r}.")
-            seen.add(name)
             groups[name].append(stream_name)
     for name, members in groups.items():
         if not members:
@@ -105,9 +89,8 @@ def get_encoder_streams(config: Config) -> dict[str, list[str]]:
 
 def get_encoder_config(config: Config, name: str) -> Config:
     """Scope architecture and ordered streams to one independently weighted encoder."""
-    members = get_encoder_streams(config)[name]
     scoped = OmegaConf.merge(config, config.encoders[name])
-    scoped.streams = {stream: config.streams[stream] for stream in members}
+    scoped.streams = {stream: cfg for stream, cfg in config.streams.items() if name in cfg.encoders}
     return scoped
 
 

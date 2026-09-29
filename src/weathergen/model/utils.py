@@ -24,8 +24,6 @@ def add_healpix_latents_(
     target_level: int,
 ) -> torch.Tensor:
     """Add NESTED [B, cells, queries, features] latents into an owned accumulator."""
-    if any(type(level) is not int or level < 0 for level in (source_level, target_level)):
-        raise ValueError("HEALPix levels must be nonnegative integers.")
     if destination.ndim != 4 or source.ndim != 4:
         raise ValueError("Latents must have explicit [B, N, Q, D] axes.")
     if source.shape[1] != 12 * 4**source_level or destination.shape[1] != 12 * 4**target_level:
