@@ -10,6 +10,7 @@
 # nor does it submit to any jurisdiction.
 import contextlib
 import copy
+import gc
 import logging
 import time
 from math import sqrt
@@ -74,6 +75,22 @@ def _has_targets(samples, stream_name: str, step: int) -> bool:
         (sd := s.streams_data.get(stream_name)) is not None and len(sd.target_coords[step]) > 0
         for s in samples
     )
+
+
+def _freeze_inherited_heap(_worker_id: int) -> None:
+    """Exclude the parent's objects from this worker's GC.
+
+    Workers are forked once CUDA is live. Collecting an inherited tensor that carries
+    recorded stream uses runs cudaEventCreate/Record in a process that can never
+    initialise CUDA, which aborts the worker and takes the rank down with it.
+    """
+    gc.freeze()
+
+
+def _fork_safe_iter(loader):
+    """Iterate a loader, forking its workers from a heap with no dead cycles."""
+    gc.collect()
+    return iter(loader)
 
 
 class Trainer(TrainerBase):
@@ -235,6 +252,7 @@ class Trainer(TrainerBase):
             "num_workers": loader_num_workers,
             "pin_memory": cf.data_loading.get("memory_pinning", False),
             "persistent_workers": cf.data_loading.get("persistent_workers", False),
+            "worker_init_fn": _freeze_inherited_heap,
         }
         self.data_loader_validation = torch.utils.data.DataLoader(
             self.dataset, **loader_params, sampler=None
@@ -285,6 +303,7 @@ class Trainer(TrainerBase):
             "batch_sampler": None,
             "shuffle": False,
             "num_workers": cf.data_loading.num_workers,
+            "worker_init_fn": _freeze_inherited_heap,
         }
         self.data_loader = torch.utils.data.DataLoader(self.dataset, **loader_params, sampler=None)
         self.data_loader_validation = torch.utils.data.DataLoader(
@@ -450,8 +469,7 @@ class Trainer(TrainerBase):
                 assert False, "validate_before_training must be integer or boolean."
 
     def _check_uniform_occupancy(self, batch) -> None:
-        """Fail fast when ranks disagree on which (stream, step) slots hold data.
-        """
+        """Fail fast when ranks disagree on which (stream, step) slots hold data."""
         if not dist.is_initialized() or dist.get_world_size() < 2:
             return
 
@@ -497,7 +515,7 @@ class Trainer(TrainerBase):
 
         apply_fct_to_blocks(self.model, cf.freeze_modules, set_to_eval)
 
-        dataset_iter = iter(self.data_loader)
+        dataset_iter = _fork_safe_iter(self.data_loader)
 
         self.optimizer.zero_grad()
 
@@ -635,7 +653,7 @@ class Trainer(TrainerBase):
         cf = self.cf
         self.model.eval()
 
-        dataset_val_iter = iter(self.data_loader_validation)
+        dataset_val_iter = _fork_safe_iter(self.data_loader_validation)
 
         num_samples_write = mode_cfg.get("output", {}).get("num_samples", 0) * batch_size
 

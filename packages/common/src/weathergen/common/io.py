@@ -12,6 +12,7 @@ import enum
 import functools
 import itertools
 import logging
+import math
 import pathlib
 import timeit
 import typing
@@ -31,6 +32,7 @@ SHARDING_ENABLED = True
 SHARD_N_SAMPLES = 40320
 CHUNK_N_SAMPLES = SHARD_N_SAMPLES // 60
 SCALE_FACTOR = 4  # scaling for the other dimensions
+TARGET_CHUNK_BYTES = 4 << 20
 type DType = np.float32
 type NPDT64 = datetime64
 type ArrayType = zarr.Array | np.NDArray[DType]
@@ -49,16 +51,28 @@ def is_ndarray(obj: typing.Any) -> bool:
 def _get_shards(
     shard_nsamples: tuple[int], chunks: tuple[int]
 ) -> tuple[tuple[int, ...], *tuple[int, ...]]:
-    """Helper function to find number of shards from chunks and predefined size of shards"""
-    shards = (shard_nsamples, *((SCALE_FACTOR + 1) * x for x in chunks[1:]))
+    """Helper function to find number of shards from chunks and predefined size of shards.
+
+    Zarr requires every shard dimension to be a whole multiple of the corresponding chunk
+    dimension, so the sample axis is rounded up to the next multiple of the chunk rows.
+    """
+    shard_rows = math.ceil(max(shard_nsamples, chunks[0]) / chunks[0]) * chunks[0]
+    shards = (shard_rows, *((SCALE_FACTOR + 1) * x for x in chunks[1:]))
     return shards
 
 
 def _get_chunks(
-    chunk_nsamples: tuple[int], data_shape: tuple[int]
+    chunk_nsamples: tuple[int], data_shape: tuple[int], itemsize: int = 4
 ) -> tuple[tuple[int, ...], *tuple[int, ...]]:
-    """Helper function to find chunks from shape of data and predefined size of chunks"""
-    chunks = (chunk_nsamples, *(max(x // SCALE_FACTOR, 1) for x in data_shape[1:]))
+    """Helper function to find chunks from shape of data and predefined size of chunks.
+
+    ``chunk_nsamples`` acts as a lower bound on the rows per chunk; the actual number is
+    grown so a chunk holds about TARGET_CHUNK_BYTES, which keeps the chunk count (and the
+    per-chunk codec/store overhead) bounded for streams with many datapoints.
+    """
+    trailing = tuple(max(x // SCALE_FACTOR, 1) for x in data_shape[1:])
+    row_bytes = max(itemsize * math.prod(trailing), 1)
+    chunks = (max(chunk_nsamples, TARGET_CHUNK_BYTES // row_bytes), *trailing)
     return chunks
 
 
@@ -301,7 +315,7 @@ class OutputDataset:
         self, chunk_nsamples=CHUNK_N_SAMPLES, shard_nsamples=SHARD_N_SAMPLES
     ) -> xr.DataArray:
         """Convert raw dask arrays into chunked dask-aware xarray dataset."""
-        chunks = _get_chunks(chunk_nsamples, self.data.shape)
+        chunks = _get_chunks(chunk_nsamples, self.data.shape, self.data.dtype.itemsize)
         if SHARDING_ENABLED:
             shards = _get_shards(shard_nsamples, chunks)
             _logger.debug(f"sharding enabled with shards: {shards} and chunks: {chunks}")
@@ -476,7 +490,7 @@ class ZarrIO:
         if array.size == 0:  # sometimes for geoinfo
             chunks = "auto"
         else:
-            chunks = _get_chunks(CHUNK_N_SAMPLES, array.shape)
+            chunks = _get_chunks(CHUNK_N_SAMPLES, array.shape, array.dtype.itemsize)
         _logger.debug(
             f"writing array: {name} with shape: {array.shape},chunks: {chunks}"
             + f"into group: {group}."

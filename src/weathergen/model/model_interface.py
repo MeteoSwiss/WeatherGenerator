@@ -20,8 +20,8 @@ from torch.distributed.fsdp import (
     fully_shard,
 )
 from torch.distributed.tensor import DTensor, distribute_tensor
-from weathergen.common.config import Config, get_path_model, merge_configs
 
+from weathergen.common.config import Config, get_path_model, merge_configs
 from weathergen.model.attention import (
     MultiCrossAttentionHeadVarlen,
     MultiCrossAttentionHeadVarlenSlicedQ,
@@ -266,6 +266,22 @@ def _remap_encoder_levels(cf, model, params: dict) -> dict:
                 continue
             renamed[new_key] = tensor
             num_renamed += 1
+
+    if num_renamed == 0:
+        wanted = {d for dsts in remap.values() for d in dsts}
+        present = set()
+        for key in params:
+            stripped = _strip_module_prefix(key)
+            for container in containers:
+                if stripped.startswith(container):
+                    present.add(stripped[len(container) :].partition(".")[0])
+        if wanted <= present:
+            if is_root():
+                logger.info(
+                    f"encoder_level_remap {remap} was already applied in this checkpoint "
+                    f"(levels {sorted(wanted)} present, no source keys remain): nothing to do."
+                )
+            return params
 
     assert num_renamed > 0, (
         f"encoder_level_remap {remap} matched no checkpoint keys; check the source levels "

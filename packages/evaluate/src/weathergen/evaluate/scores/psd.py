@@ -474,7 +474,9 @@ def _fft_psd_calc(ht: np.typing.NDArray) -> np.typing.NDArray:
     """
     n = len(ht)
     hf = np.fft.rfft(ht, norm="forward")
-    power = np.abs(hf[1 : round(n / 2 + 1)]) ** 2
+    # n // 2 positive frequencies for odd and even n alike (round(n / 2 + 1) rounds half to even,
+    # which gave n // 2 or n // 2 + 1 depending on n and broke the match with _calcposfreq)
+    power = np.abs(hf[1 : n // 2 + 1]) ** 2
     power *= 2.0  # compensate for positive frequencies only
     return power
 
@@ -516,7 +518,7 @@ def _calcposfreq(npoints: int, spacing_deg: float = 1.0) -> np.typing.NDArray:
         Positive frequencies, length ``npoints // 2``.
     """
     freq = np.fft.fftfreq(npoints, d=spacing_deg)
-    return np.abs(freq[1 : round(npoints / 2 + 1)])
+    return np.abs(freq[1 : npoints // 2 + 1])
 
 
 def fft_psd(
@@ -602,7 +604,10 @@ def fft_psd(
         psds.append(_cubepsd(data_3d[s]))
     psd_result = np.mean(psds, axis=0)
 
-    spacing = 360.0 / nlon_sub if nlon_sub > 0 else regrid_resolution
+    if len(lon_axis) > 1:
+        spacing = float(lon_axis[1] - lon_axis[0])
+    else:
+        spacing = regrid_resolution
     frequencies = _calcposfreq(nlon_sub, spacing_deg=spacing)
     return frequencies, psd_result
 
