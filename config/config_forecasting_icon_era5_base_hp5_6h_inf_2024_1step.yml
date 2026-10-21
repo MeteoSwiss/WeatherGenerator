@@ -1,0 +1,16 @@
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T18:00 # end of the last 6 h window ERA5 (1h zarr, ends 23:00) serves: no narrowing
+  shuffle: True
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+streams_directory: ./config/streams/icon_era5_base_hp5_6h_inf/
+
+
+data_loading:
+  num_workers: 4
+  rng_seed: 11828
+  memory_pinning: False
