@@ -1,0 +1,27 @@
+
+streams_directory: "./config/streams/icon_only_hp8_6h/"
+
+
+fe_healpix_active_region:
+  from_stream: ICON
+  rings: 0
+
+freeze_modules: ""
+
+training_config:
+  num_mini_epochs: 1610
+
+  learning_rate_scheduling:
+    lr_start: 1e-6
+    lr_max: 5e-5
+    lr_final_decay: 2e-6
+    lr_final: 0.0
+    num_steps_warmup: 256
+    num_steps_cooldown: 512
+    policy_warmup: "cosine"
+    policy_decay: "constant"
+    policy_cooldown: "linear"
+    parallel_scaling_policy: "const"
+
+wgtags:
+  exp: "icon_only_f8_r16"

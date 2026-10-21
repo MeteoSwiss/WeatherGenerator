@@ -1,0 +1,5 @@
+training_config:
+  num_mini_epochs: 1320
+
+wgtags:
+  exp: "icon_hp10_rung_ext"

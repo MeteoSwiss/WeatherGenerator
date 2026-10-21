@@ -1,0 +1,26 @@
+# Inference for the 7-channel full finetune.
+#
+# Must use the 7-channel stream set: the finetuned checkpoint's pred head for ICON_7CH is
+# (7, 256), so the default icon_era5_hp5_6h_inf streams (72 ICON targets) would rebuild a
+# (72, 256) head and fail the shape guard at load. ERA5 stays forcing-only for the same
+# reason -- the finetune never builds an ERA5 head, so there is none to restore.
+#
+# num_steps is 1 to match training (training_config.forecast.num_steps = 1). Raise it only
+# if you deliberately want the rollout-decay curve.
+#
+# Dates match config_forecasting_icon_era5_qv850_inf.yml so sample i is the same init time.
+
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T23:59
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+
+streams_directory: ./config/streams/icon_era5_hp5_6h_7ch_inf/
+
+data_loading:
+  num_workers: 4
+  memory_pinning: False

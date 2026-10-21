@@ -1,0 +1,12 @@
+
+fe_healpix_level: 5
+fe_healpix_active_region: null
+
+train_logging:
+  checkpoint: 100
+
+training_config:
+  num_mini_epochs: 170
+
+wgtags:
+  exp: "multihp_icon_f5_glob"

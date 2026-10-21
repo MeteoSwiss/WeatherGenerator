@@ -1,0 +1,28 @@
+streams_directory: "./config/streams/icon_era5_hp5_6h_qv850ft/"
+
+freeze_modules: "encoders|regridders|fusion|fusion_norms|forecast_engine|q_cells|latent_pre_norm|latent_heads"
+
+general:
+  istep: 0
+
+training_config:
+  num_mini_epochs: 270
+
+  optimizer:
+    weight_decay: 0.01
+    grad_clip: 1.0
+
+  learning_rate_scheduling:
+    lr_start: 1e-6
+    lr_max: 5e-5
+    lr_final_decay: 2e-6
+    lr_final: 0.0
+    num_steps_warmup: 256
+    num_steps_cooldown: 512
+    policy_warmup: "cosine"
+    policy_decay: "constant"
+    policy_cooldown: "linear"
+    parallel_scaling_policy: "const"
+
+wgtags:
+  exp: "icon_decoder_ft_qv850"

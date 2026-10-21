@@ -1,0 +1,20 @@
+# Full-year 2024 single-step inference for the 7-channel full finetune (dgg2qwzb), on the same 120
+# seeded dates as every other ICON 2024 run: same dates, shuffle, seed, workers and end_date as
+# config_forecasting_icon_era5_e5_6h_inf_2024_1step.yml. Only the stream set differs: ERA5 and ICON
+# are forcing-only in this model and ICON_7CH (QV_850, TD_2M, T_2M, U_10M, U_850, V_10M, V_850) is
+# the target stream.
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T18:00 # end of the last 6 h window ERA5 (1h zarr, ends 23:00) serves: no narrowing
+  shuffle: True
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+streams_directory: ./config/streams/icon_era5_hp5_6h_7ch_inf/
+
+data_loading:
+  num_workers: 4
+  rng_seed: 11828
+  memory_pinning: False

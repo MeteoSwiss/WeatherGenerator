@@ -1,0 +1,20 @@
+# Full-year 2024 single-step inference for the ICON-only finetune (wttf7jz4), on the same 120 seeded
+# dates as every other ICON 2024 run: same dates, shuffle, seed, workers and end_date as
+# config_forecasting_icon_era5_e5_6h_inf_2024_1step.yml. Only the stream set differs (no ERA5).
+# num_workers must stay 4 (not the 2 of config_finetune_icon_only_inf.yml): workers are part of the
+# sample seed, so a different count draws different dates.
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T18:00 # same end as the ICON+ERA5 runs, so the window index range is identical
+  shuffle: True
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+streams_directory: ./config/streams/icon_only_hp8_6h_inf/
+
+data_loading:
+  num_workers: 4
+  rng_seed: 11828
+  memory_pinning: False

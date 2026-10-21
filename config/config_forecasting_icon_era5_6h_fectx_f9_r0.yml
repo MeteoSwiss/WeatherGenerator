@@ -1,0 +1,18 @@
+# FE level x context 2x2 (on top of config_forecasting_icon_era5_6h_i8_e5_f8_r16_8nodes.yml).
+# Arm: FE@9, no context (grid_F = ICON footprint only).
+# Halo matched in km across levels: L8 r8 ~ 204 km, L9 r16 ~ 208 km.
+
+fe_healpix_level: 9
+fe_healpix_active_region:
+  from_stream: ICON
+  rings: 0
+
+# base has 250, which never fires at 128 batches/mini-epoch on 8 nodes -> no _latest to chain from
+train_logging:
+  checkpoint: 100
+
+training_config:
+  num_mini_epochs: 64
+
+wgtags:
+  exp: "fectx_f9_r0"

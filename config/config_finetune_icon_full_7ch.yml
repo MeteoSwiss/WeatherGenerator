@@ -1,0 +1,31 @@
+streams_directory: "./config/streams/icon_era5_hp5_6h_7chft/"
+
+freeze_modules: ""
+
+general:
+  istep: 0
+
+train_logging:
+  checkpoint: 100
+
+training_config:
+  num_mini_epochs: 270
+
+  optimizer:
+    weight_decay: 0.01
+    grad_clip: 1.0
+
+  learning_rate_scheduling:
+    lr_start: 1e-6
+    lr_max: 5e-5
+    lr_final_decay: 2e-6
+    lr_final: 0.0
+    num_steps_warmup: 1000
+    num_steps_cooldown: 512
+    policy_warmup: "cosine"
+    policy_decay: "constant"
+    policy_cooldown: "linear"
+    parallel_scaling_policy: "const"
+
+wgtags:
+  exp: "icon_full_ft_7ch"

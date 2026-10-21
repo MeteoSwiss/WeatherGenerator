@@ -1,0 +1,15 @@
+test_config:
+  start_date: 2023-01-01T00:00
+  end_date: 2023-12-31T18:00 
+  shuffle: True
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+streams_directory: ./config/streams/era5_o96_cerra_3h_inf/
+
+
+data_loading:
+  num_workers: 4
+  rng_seed: 11828

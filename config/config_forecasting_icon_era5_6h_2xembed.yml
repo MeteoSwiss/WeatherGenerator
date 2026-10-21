@@ -1,0 +1,11 @@
+
+streams_directory: "./config/streams/icon_era5_hp5_6h_2xembed/"
+
+train_logging:
+  checkpoint: 100
+
+training_config:
+  num_mini_epochs: 270
+
+wgtags:
+  exp: "icon_2xembed_scratch"

@@ -1,0 +1,37 @@
+streams_directory: "./config/streams/icon_era5_hp10_6h_ft/"
+
+fe_healpix_level: 10
+fe_healpix_active_region:
+  from_stream: ICON
+  rings: 0
+
+
+encoder_level_remap: {"8": 10}
+
+freeze_modules: ""
+
+
+train_logging:
+  checkpoint: 100
+
+training_config:
+  num_mini_epochs: 1190
+
+  optimizer:
+    weight_decay: 0.01
+    grad_clip: 1.0
+
+  learning_rate_scheduling:
+    lr_start: 1e-6
+    lr_max: 1e-4
+    lr_final_decay: 2e-6
+    lr_final: 0.0
+    num_steps_warmup: 256
+    num_steps_cooldown: 512
+    policy_warmup: "cosine"
+    policy_decay: "constant"
+    policy_cooldown: "linear"
+    parallel_scaling_policy: "const"
+
+wgtags:
+  exp: "icon_full_ft_hp10_lr1e4"

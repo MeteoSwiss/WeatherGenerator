@@ -1,0 +1,20 @@
+# Full-year 2024 single-step inference for the qv850 decoder finetune (woanbvl5), on the same 120
+# seeded dates as every other ICON 2024 run: same dates, shuffle, seed, workers and end_date as
+# config_forecasting_icon_era5_e5_6h_inf_2024_1step.yml. Only the stream set differs.
+# Must use the qv850 stream set: ERA5 and ICON are forcing-only in this model and ICON_QV850 is the
+# single-channel target stream (see config_forecasting_icon_era5_qv850_inf.yml).
+test_config:
+  start_date: 2024-01-01T00:00
+  end_date: 2024-12-31T18:00 # end of the last 6 h window ERA5 (1h zarr, ends 23:00) serves: no narrowing
+  shuffle: True
+  output:
+    num_samples: 120
+  samples_per_mini_epoch: 120
+  forecast:
+    num_steps: 1
+streams_directory: ./config/streams/icon_era5_hp5_6h_qv850_inf/
+
+data_loading:
+  num_workers: 4
+  rng_seed: 11828
+  memory_pinning: False
