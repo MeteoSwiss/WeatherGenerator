@@ -7,3 +7,7 @@ test_config:
   forecast:
     num_steps: 20
 streams_directory: ./config/streams/icon_era5_base_hp5_6h_inf/
+
+data_loading:
+  num_workers: 2
+  memory_pinning: False
