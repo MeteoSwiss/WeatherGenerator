@@ -218,7 +218,7 @@ class TokenizerMasking(Tokenizer):
         )
 
         # TODO: split up
-        _, _, _, coords_local, coords_per_cell, idxs_data = tokenize_apply_mask_target(
+        _, _, _, coords_local, coords_per_cell = tokenize_apply_mask_target(
             stream_info["stream_id"],
             self.hl_target,
             idxs_cells,
@@ -234,7 +234,7 @@ class TokenizerMasking(Tokenizer):
             self.decoder_absolute_coords,
         )
 
-        return (coords_local, coords_per_cell, idxs_data)
+        return (coords_local, coords_per_cell)
 
     def get_target_values(
         self,
@@ -251,7 +251,7 @@ class TokenizerMasking(Tokenizer):
             idxs_cells, idxs_cells_lens, cell_mask
         )
 
-        data, datetimes, coords, _, _, idxs_data = tokenize_apply_mask_target(
+        data, datetimes, coords, _, _ = tokenize_apply_mask_target(
             stream_info["stream_id"],
             self.hl_target,
             idxs_cells,
@@ -273,4 +273,4 @@ class TokenizerMasking(Tokenizer):
             # compute indices for inversion
             _, idxs_ord_inv = torch.sort(idxs_flat)
 
-        return (data, datetimes, coords, idxs_ord_inv, idxs_data)
+        return (data, datetimes, coords, idxs_ord_inv)

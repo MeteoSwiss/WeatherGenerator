@@ -40,7 +40,6 @@ from weathergen.datasets.tokenizer_masking import TokenizerMasking
 from weathergen.datasets.utils import (
     get_tokens_lens,
 )
-from weathergen.model.residual import residual_prediction_mode
 from weathergen.readers_extra.registry import get_extra_reader
 from weathergen.train.utils import Stage, get_batch_size_from_config
 from weathergen.utils.distributed import is_root
@@ -58,18 +57,14 @@ FORECAST_DEFAULTS = {
 }
 
 
-def collect_datasources(
-    stream_datasets: list, idx: int, type: str, rng, with_row_idxs: bool = False
-) -> IOReaderData:
+def collect_datasources(stream_datasets: list, idx: int, type: str, rng) -> IOReaderData:
     """
     Utility function to collect all sources / targets from streams list
 
-    rng and num_subset are used to drop data. with_row_idxs tags each row with its read position,
-    which residual prediction needs to re-align sub-sampled targets with the source.
+    rng and num_subset are used to drop data
     """
 
     rdatas = []
-    row_offset = 0
 
     for ds in stream_datasets:
         # number of points to sub-sample
@@ -88,76 +83,14 @@ def collect_datasources(
             assert False, "invalid value for argument `type`"
 
         # get source (of potentially multi-step length)
-        rdata = get_reader_data(idx)
-        if with_row_idxs:
-            n_read = rdata.data.shape[0]
-            rdata.row_idxs = np.arange(row_offset, row_offset + n_read, dtype=np.int64)
-            row_offset += n_read
-
-        rdata = rdata.shuffle(rng, shuffle, num_subset).remove_nan_coords_and_geoinfos()
+        rdata = (
+            get_reader_data(idx).shuffle(rng, shuffle, num_subset).remove_nan_coords_and_geoinfos()
+        )
         rdata.data = normalize_channels(rdata.data)
         rdata.geoinfos = ds.normalize_geoinfos(rdata.geoinfos)
         rdatas += [rdata]
 
     return IOReaderData.combine(rdatas)
-
-
-def residual_col_map(stream_ds: list) -> np.typing.NDArray:
-    """
-    Source column for each target channel, matched by name; -1 if the source lacks it.
-    """
-
-    src, tgt = list(stream_ds[0].source_channels), list(stream_ds[0].target_channels)
-    for ds in stream_ds[1:]:
-        assert list(ds.source_channels) == src and list(ds.target_channels) == tgt, (
-            "residual prediction requires all readers of a stream to share their channels"
-        )
-
-    pos = {c: i for i, c in enumerate(src)}
-    return np.array([pos.get(c, -1) for c in tgt], dtype=np.int64)
-
-
-def residual_base(col_map: np.typing.NDArray, source_rdata: IOReaderData) -> torch.Tensor:
-    """
-    Input-time values of a source read, reordered into the target channels, with a trailing zero
-    row that points without a source row resolve to.
-    """
-
-    n_rows = source_rdata.data.shape[0]
-    base = np.zeros((n_rows + 1, col_map.shape[0]), dtype=np.float32)
-    known = col_map >= 0
-    base[:n_rows, known] = source_rdata.data[:, col_map[known]]
-    np.nan_to_num(base[:n_rows], copy=False, nan=0.0)
-    return torch.from_numpy(base)
-
-
-def residual_source_rows(
-    source_rdata: IOReaderData, target_rdata: IOReaderData, idxs_data: torch.Tensor
-) -> torch.Tensor:
-    """
-    Row of the source read backing each predicted point, in the order the points are predicted.
-    """
-
-    n_src = source_rdata.data.shape[0]
-    read_pos = target_rdata.row_idxs[idxs_data.numpy()]
-
-    # read position -> source row, defaulting to the trailing zero row of the base
-    size = max(source_rdata.row_idxs.max(initial=-1), read_pos.max(initial=-1)) + 1
-    src_row = np.full(size, n_src, dtype=np.int64)
-    src_row[source_rdata.row_idxs] = np.arange(n_src, dtype=np.int64)
-
-    return torch.from_numpy(src_row[read_pos])
-
-
-def residual_row_idxs(source_rdata, rdata, idxs_data) -> torch.Tensor | None:
-    """
-    Source rows backing the points predicted at one forecast step, or None when there is no base.
-    """
-
-    if source_rdata is None or rdata.row_idxs is None:
-        return None
-
-    return residual_source_rows(source_rdata, rdata, idxs_data)
 
 
 @dataclasses.dataclass
@@ -196,7 +129,8 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         }
 
         self.grids = {
-            L: NativeGrid(cf, level=L, region=region_for_level(cf, L)) for L in self.encoder_levels
+            L: NativeGrid(cf, level=L, region=region_for_level(cf, L))
+            for L in self.encoder_levels
         }
         # single shared masker; per-call grids come from each tokenizer's grid_source/grid_target
         self.masker = Masker(cf.healpix_level, stage, cf.streams, self.mode_cfg)
@@ -254,29 +188,6 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         # check samples per mini epoch
         self.samples_per_mini_epoch = mode_cfg.samples_per_mini_epoch
         self.check_samples(self._get_fsm())
-
-        # residual prediction: source-to-target channel map per stream
-        residual_mode = residual_prediction_mode(cf)
-        self._residual_col_maps = {}
-        if residual_mode != "none":
-            self._residual_col_maps = {
-                name: residual_col_map(stream.readers)
-                for name, stream in self.streams_datasets.items()
-                if stream.readers
-            }
-
-        # grid_conv scatters the prediction back onto the stream's native raster, so it needs one
-        self._grid_shapes = dict.fromkeys(self.streams_datasets)
-        if residual_mode == "grid_conv":
-            self._grid_shapes = {
-                name: stream.readers[0].grid_shape if stream.readers else None
-                for name, stream in self.streams_datasets.items()
-            }
-            if not any(self._grid_shapes.values()):
-                raise ValueError(
-                    "residual_prediction 'grid_conv' needs a stream on a regular 2-D grid to "
-                    f"scatter onto; none of {sorted(self.streams_datasets)} has one."
-                )
 
         # RNG seed setup
         rs = cf.data_loading.rng_seed
@@ -538,10 +449,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
     def get_targets_num_channels(self):
         return [ds.readers[0].get_target_num_channels() for ds in self.streams_datasets.values()]
 
-    def get_grid_shapes(self):
-        """Native 2-D raster per stream, or None for one that is not on a regular grid."""
-        return self._grid_shapes
-
     def get_targets_coords_size(self):
         # TODO: avoid hard coding magic values
         # +6 at the end for stream_id and time encoding
@@ -625,7 +532,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         output_data: list,
         output_tokens: list,
         target_mask,
-        residual_source=None,
     ) -> StreamData:
         """
         Generate stream data for output
@@ -647,24 +553,17 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                 continue
 
             if "target_coords" in mode:
-                (tc, tc_l, idxs_coords) = tok.get_target_coords(
+                (tc, tc_l) = tok.get_target_coords(
                     stream_info,
                     rdata,
                     token_data,
                     (time_win_target.start, time_win_target.end),
                     target_mask,
                 )
-                stream_data.add_target_coords(
-                    self._stage,
-                    timestep_idx,
-                    tc,
-                    tc_l,
-                    rdata.is_spoof,
-                    residual_row_idxs(residual_source, rdata, idxs_coords),
-                )
+                stream_data.add_target_coords(self._stage, timestep_idx, tc, tc_l, rdata.is_spoof)
 
             if "target_values" in mode:
-                (tt_cells, tt_t, tt_c, idxs_inv, idxs_data) = tok.get_target_values(
+                (tt_cells, tt_t, tt_c, idxs_inv) = tok.get_target_values(
                     stream_info,
                     rdata,
                     token_data,
@@ -672,17 +571,8 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                     target_mask,
                 )
 
-                row_idxs = residual_row_idxs(residual_source, rdata, idxs_data)
-
                 stream_data.add_target_values(
-                    self._stage,
-                    timestep_idx,
-                    tt_cells,
-                    tt_c,
-                    tt_t,
-                    idxs_inv,
-                    rdata.is_spoof,
-                    row_idxs,
+                    self._stage, timestep_idx, tt_cells, tt_c, tt_t, idxs_inv, rdata.is_spoof
                 )
 
         return stream_data
@@ -700,8 +590,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         output_tokens: list,
         output_mask,
         input_mask,
-        res_col_map=None,
-        res_grid_shape=None,
     ) -> StreamData:
         """
         Return one batch of data
@@ -733,16 +621,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             self.grid_F.num_cells,
         )
 
-        # the model only ever reads the base from the source view, so build it there alone
-        residual_source = None
-        if res_col_map is not None and "target_coords" in modes and not input_data[-1].is_spoof:
-            residual_source = input_data[-1]
-            stream_data.source_base = residual_base(res_col_map, residual_source)
-            if res_grid_shape is not None:
-                cells = int(np.prod(res_grid_shape))
-                pixels = np.append(residual_source.row_idxs % cells, cells)
-                stream_data.source_grid_idx = torch.from_numpy(pixels)
-
         stream_data = self._build_stream_data_input(
             modes,
             stream_data,
@@ -763,19 +641,12 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             output_data,
             output_tokens,
             output_mask,
-            residual_source,
         )
 
         return stream_data
 
     def _get_data_windows(
-        self,
-        base_idx,
-        num_forecast_steps,
-        num_steps_input_max,
-        stream_ds,
-        stream_info,
-        with_row_idxs=False,
+        self, base_idx, num_forecast_steps, num_steps_input_max, stream_ds, stream_info
     ):
         """
         Collect all data needed for current stream to potentially amortize costs by
@@ -792,7 +663,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         for idx in range(base_idx - num_steps_input_max + 1, base_idx + 1):
             # TODO: check that we are not out of bounds when we go back in time
 
-            rdata = collect_datasources(stream_ds, idx, "source", self.rng, with_row_idxs)
+            rdata = collect_datasources(stream_ds, idx, "source", self.rng)
 
             if rdata.is_empty():
                 # work around for https://github.com/pytorch/pytorch/issues/158719
@@ -815,9 +686,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         for timestep_idx in range(self.output_offset, num_output_steps):
             step_forecast_dt = base_idx + (self.time_step * timestep_idx) // self.step_timedelta
 
-            rdata = collect_datasources(
-                stream_ds, step_forecast_dt, "target", self.rng, with_row_idxs
-            )
+            rdata = collect_datasources(stream_ds, step_forecast_dt, "target", self.rng)
 
             if rdata.is_empty():
                 # work around for https://github.com/pytorch/pytorch/issues/158719
@@ -927,15 +796,8 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
             # input_data and output_data is conceptually consecutive but differs
             # in source and target channels; overlap in one window when self.output_offset=0
             i_max = input_steps.max().item()
-            res_col_map = self._residual_col_maps.get(stream_name)
-            res_grid_shape = self._grid_shapes.get(stream_name)
             (input_data, output_data) = self._get_data_windows(
-                idx,
-                num_forecast_steps,
-                i_max,
-                stream_ds,
-                stream_info,
-                with_row_idxs=res_col_map is not None,
+                idx, num_forecast_steps, i_max, stream_ds, stream_info
             )
 
             # tokenize windows
@@ -959,8 +821,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                     output_tokens,
                     output_mask=target_masks.masks[tidx],
                     input_mask=source_mask,
-                    res_col_map=res_col_map,
-                    res_grid_shape=res_grid_shape,
                 )
 
                 batch.add_source_stream(sidx, tidx, stream_name, sdata, source_masks.metadata[sidx])
@@ -981,8 +841,6 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
                     output_tokens,
                     output_mask=target_mask,
                     input_mask=target_mask,
-                    res_col_map=res_col_map,
-                    res_grid_shape=res_grid_shape,
                 )
                 target_metadata = target_masks.metadata[tidx]
                 # also want to add the mask to the metadata

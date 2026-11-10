@@ -49,7 +49,6 @@ ae_aggregation_mlp_hidden_factor: 2
 # sin/cos of absolute target lat/lon substituted into the relative coord block
 decoder_absolute_coords: True
 decoder_type: PerceiverIOCoordConditioning #  Main options PerceiverIOCoordConditioning or Linear
-residual_prediction: none
 pred_adapter_kv: False
 pred_self_attention: True
 pred_dyadic_dims: False
