@@ -31,6 +31,7 @@ class StreamEmbedTransformer(torch.nn.Module):
         num_blocks,
         num_heads,
         dropout_rate=0.0,
+        dropout_final_rate=0.1,
         norm_type="LayerNorm",
         unembed_mode="full",
         stream_name="stream_embed",
@@ -56,6 +57,7 @@ class StreamEmbedTransformer(torch.nn.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.unembed_mode = unembed_mode
+        self.dropout_final_rate = dropout_final_rate
 
         norm = torch.nn.LayerNorm if norm_type == "LayerNorm" else RMSNorm
 
@@ -100,7 +102,7 @@ class StreamEmbedTransformer(torch.nn.Module):
         else:
             raise ValueError(f"Unknown unembed mode: {unembed_mode}")
 
-        self.dropout_final = torch.nn.Dropout(0.1)
+        self.dropout_final = torch.nn.Dropout(self.dropout_final_rate)
 
     def forward(self, x_in):
         if x_in.shape[0] <= _MAX_TOKENS_PER_EMBED_CALL:

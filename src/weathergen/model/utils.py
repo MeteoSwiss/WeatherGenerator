@@ -14,6 +14,8 @@ import re
 import torch
 import torch.nn as nn
 
+from weathergen.model.norms import AdaLayerNorm
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,10 +38,13 @@ def reset_leaf_parameters(module):
     Modules here implement reset_parameters as their *special-case* pass only -- buffers,
     zero-inits, learned queries -- and assume this generic pass has already run. Anything that
     re-initializes a subtree has to run both, in this order.
+
+    AdaLayerNorm is included so its zero-init survives (#2848): ``apply`` visits children before
+    their parent, so its Linears are reset first and its final projection is then zeroed again.
     """
 
     def _reset(m):
-        if isinstance(m, nn.Linear | nn.LayerNorm):
+        if isinstance(m, AdaLayerNorm | nn.Linear | nn.LayerNorm):
             m.reset_parameters()
 
     module.apply(_reset)
