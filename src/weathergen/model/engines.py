@@ -545,6 +545,9 @@ class IdentityEngine(torch.nn.Module):
         super().__init__()
         self.fe_blocks = torch.nn.ModuleList()
 
+    def reset_parameters(self) -> None:
+        pass
+
     def forward(self, tokens, *args, **kwargs):
         return tokens
 
