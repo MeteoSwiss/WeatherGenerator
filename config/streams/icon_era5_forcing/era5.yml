@@ -12,7 +12,7 @@
 ERA5 :
   healpix_level: 5
   type : anemoi
-  filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2024-1h-v3-with-era51.zarr']
+  filenames : ['aifs-ea-an-oper-0001-mars-n320-1979-2024-1h-v2-with-era51.zarr']
   frequency: 6h
   stream_id : 1  # ICON keeps 0, as in the AE run whose checkpoint is loaded
   source_exclude : ['skt', 'tcw', 'cp', 'tp', 'w_10', 'w_50', 'w_100', 'w_150', 'w_200', 'w_250', 'w_300', 'w_400', 'w_500', 'w_600', 'w_700', 'w_850', 'w_925', 'w_1000']
