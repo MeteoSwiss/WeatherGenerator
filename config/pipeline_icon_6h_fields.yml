@@ -1,0 +1,40 @@
+# Field plots: inference from the ICON 6h AE (final epoch) and the warm-started forecaster
+# (latest checkpoint, still training), then maps of prediction / target / bias.
+# Inference dates are inside the validation period (2023-10-01 .. 2023-12-31).
+stages:
+  - name: iconaeinf
+    stage: inference
+    from_run_id: 639zhq8b
+    mini_epoch: 150
+    options:
+      - test_config.start_date=202310010000
+      - test_config.end_date=202310080000
+      - test_config.samples_per_mini_epoch=4
+      - test_config.output.num_samples=4
+    nodes: 1
+    slurm_args:
+      - "--time=01:00:00"
+
+  - name: iconfcinf
+    stage: inference
+    from_run_id: klet59g5
+    mini_epoch: -1
+    options:
+      - test_config.start_date=202310010000
+      - test_config.end_date=202310080000
+      - test_config.samples_per_mini_epoch=4
+      - test_config.output.num_samples=4
+      - test_config.forecast.num_steps=4
+    nodes: 1
+    slurm_args:
+      - "--time=01:00:00"
+
+  - name: iconeval
+    stage: evaluation
+    eval_config: config/evaluate/eval_config_icon_6h.yml
+    run_ids:
+      - STAGE.iconaeinf
+      - STAGE.iconfcinf
+    nodes: 1
+    slurm_args:
+      - "--time=01:00:00"

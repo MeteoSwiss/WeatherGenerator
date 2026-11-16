@@ -93,7 +93,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/icon/"
+streams_directory: "./config/streams/icon_6h/"
 
 # type of zarr_store
 zarr_store: "zip" # "zarr" for LocalStore, "zip" for ZipStore
@@ -145,8 +145,8 @@ training_config:
   start_date: 2005-01-02T00:00
   end_date: 2022-12-31T00:00
 
-  time_window_step: 01:00:00
-  time_window_len: 01:00:00
+  time_window_step: 06:00:00
+  time_window_len: 06:00:00
   
   learning_rate_scheduling :
     lr_start: 1e-6
@@ -158,7 +158,7 @@ training_config:
     policy_warmup: "cosine"
     policy_decay: "constant"
     policy_cooldown: "linear"
-    parallel_scaling_policy: "sqrt"
+    parallel_scaling_policy: "const"
 
   optimizer:
     grad_clip: 1.0
@@ -166,8 +166,8 @@ training_config:
     log_grad_norms: False
     adamw :
       # parameters are scaled by number of DDP workers
-      beta1 : 0.98125 # == 0.85 on 2 nodes x 4 gpus
-      beta2 : 0.9875  # == 0.90 on 2 nodes x 4 gpus
+      beta1 : 0.9953125 # == 0.85 on 8 nodes x 4 gpus
+      beta2 : 0.996875  # == 0.90 on 8 nodes x 4 gpus
       eps : 2e-08
 
   losses : {

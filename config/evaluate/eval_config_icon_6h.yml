@@ -1,0 +1,29 @@
+# Field plots for the ICON 6h AE (639zhq8b) and warm-started forecaster (klet59g5) inference runs.
+global_plotting_options:
+  image_format: "png"
+  animation_format: "gif"
+  dpi_val: 150
+  fps: 2
+
+evaluation:
+  metrics: ["rmse", "mae"]
+  score_plots: [metric_plots]
+  summary_dir: "./plots/"
+  plot_ensemble: false
+  print_summary: true
+
+default_streams:
+  ICON:
+    regions: ["icon"]
+    channels: ["q_850", "10u"]
+    evaluation:
+      forecast_step: "all"
+      sample: "all"
+    plotting:
+      sample: [0, 1]
+      forecast_step: "all"
+      data_plots:
+        - maps:
+            predictions: [image, video]
+            target: [image]
+            bias: [image]

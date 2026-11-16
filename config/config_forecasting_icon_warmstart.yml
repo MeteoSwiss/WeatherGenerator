@@ -7,7 +7,7 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-# Warm-started 3h forecast on ICON from the ICON autoencoder (config_ae_icon.yml).
+# Warm-started 6h forecast on ICON from the ICON autoencoder (config_ae_icon.yml).
 # Copy of config_forecasting_cerra_warmstart.yml adapted to ICON; settings that must match the
 # autoencoder: streams_directory, rope_2D (and architecture). Encoder + decoder loaded from the
 # AE run at mini_epoch 150, forecast engine newly initialized.
@@ -92,16 +92,17 @@ latent_noise_use_additive_noise: False
 latent_noise_deterministic_latents: True 
 
 freeze_modules: ""
-# warm start: ICON AE encoder + decoder. Set run_id to the run trained with config_ae_icon.yml.
+# warm start: ICON AE encoder + decoder from the 6h AE run (config_ae_icon.yml).
+# The 1h AE (ulu1wd88) is not reused. Launched together via config/pipeline_icon_6h.yml.
 load_chkpt:
-  run_id: cawceabl  # ICON AE (config_ae_icon.yml), launched 2026-11-06
-  mini_epoch: 150
+  run_id: 639zhq8b  # ICON AE, 6h windows, 8 nodes, launched 2026-11-12
+  mini_epoch: -1  # latest checkpoint of the AE run
 
 norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/icon/"  # must match the ICON AE
+streams_directory: "./config/streams/icon_6h/"  # must match the ICON AE
 
 # type of zarr_store
 zarr_store: "zip" # "zarr" for LocalStore, "zip" for ZipStore
@@ -146,7 +147,7 @@ training_config:
   # training_mode: "masking", "student_teacher", "latent_loss"
   training_mode: ["masking"]
 
-  num_mini_epochs: 64
+  num_mini_epochs: 150
   samples_per_mini_epoch: 4096
   shuffle: True
 
@@ -154,8 +155,8 @@ training_config:
   start_date: 2005-01-02T00:00
   end_date: 2022-12-31T00:00
 
-  time_window_step: 03:00:00
-  time_window_len: 03:00:00
+  time_window_step: 06:00:00
+  time_window_len: 06:00:00
   
   learning_rate_scheduling :
     lr_start: 1e-6
@@ -167,7 +168,7 @@ training_config:
     policy_warmup: "cosine"
     policy_decay: "constant"
     policy_cooldown: "linear"
-    parallel_scaling_policy: "sqrt"
+    parallel_scaling_policy: "const"
 
   optimizer:
     grad_clip: 1.0
@@ -175,8 +176,8 @@ training_config:
     log_grad_norms: False
     adamw :
       # parameters are scaled by number of DDP workers
-      beta1 : 0.98125 # == 0.85 on 2 nodes x 4 gpus
-      beta2 : 0.9875  # == 0.90 on 2 nodes x 4 gpus
+      beta1 : 0.9953125 # == 0.85 on 8 nodes x 4 gpus
+      beta2 : 0.996875  # == 0.90 on 8 nodes x 4 gpus
       eps : 2e-08
 
   losses : {
@@ -194,7 +195,7 @@ training_config:
     }
 
   forecast :
-      time_step: 03:00:00
+      time_step: 06:00:00
       offset: 1
       num_steps: 1
       policy: "fixed"

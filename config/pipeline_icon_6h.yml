@@ -1,0 +1,22 @@
+# 6h ICON setup (as in tsivam/iss2370_encoder/multihealpix, 8 nodes):
+# autoencoder first, then the forecaster warm-started from it (load_chkpt.run_id in its config).
+# Stages run sequentially: the forecaster starts after the last AE job ends.
+stages:
+  - name: iconae
+    stage: train
+    run_id: 639zhq8b
+    config_files:
+      - config/config_ae_icon.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: iconfc
+    stage: train
+    config_files:
+      - config/config_forecasting_icon_warmstart.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
