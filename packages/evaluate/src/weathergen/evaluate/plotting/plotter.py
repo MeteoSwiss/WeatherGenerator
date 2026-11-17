@@ -17,6 +17,7 @@ from pathlib import Path
 
 import cartopy
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -661,6 +662,7 @@ class Plotter:
                 - cmap (matplotlib.colors.Colormap)
                 - colors (list or None)
                 - use_datashader (bool)
+                - add_borders (bool), feature_resolution (str)
                 - norm (matplotlib.colors.Normalize or BoundaryNorm)
                 - add_healpix_grid (bool) and related healpix_* keys
                 - extra (dict) – leftover kwargs for ``ax.scatter``
@@ -680,6 +682,8 @@ class Plotter:
             "use_datashader": kw.pop("use_datashader", False),
             "levels": kw.pop("levels", None),
             "colorbar_scale": kw.pop("colorbar_scale", "linear"),
+            "add_borders": kw.pop("add_borders", False),
+            "feature_resolution": kw.pop("feature_resolution", "110m"),
             # HEALPix grid
             "add_healpix_grid": kw.pop("add_healpix_grid", False),
             "healpix_nside": kw.pop("healpix_nside", 4),
@@ -1024,9 +1028,20 @@ class Plotter:
         fig = plt.figure(figsize=figsize, dpi=self.dpi_val, constrained_layout=True)
         ax = fig.add_subplot(1, 1, 1, projection=proj)
         try:
-            ax.coastlines(linewidth=0.3)
+            ax.coastlines(resolution=opts["feature_resolution"], linewidth=0.3)
         except Exception:
             _logger.warning("Could not add coastlines to plot; continuing without them.")
+        if opts["add_borders"]:
+            try:
+                borders = cfeature.BORDERS.with_scale(opts["feature_resolution"])
+                next(iter(borders.geometries()), None)
+                ax.add_feature(borders, linewidth=0.3, edgecolor="black")
+            except Exception:
+                _logger.warning(
+                    "Could not add country borders to plot (Natural Earth "
+                    f"{opts['feature_resolution']} boundary_lines_land not in "
+                    f"{cartopy.config['data_dir']}?); continuing without them."
+                )
 
         for spine in ax.spines.values():
             spine.set_linewidth(0.3)

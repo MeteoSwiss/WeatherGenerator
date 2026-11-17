@@ -1,0 +1,55 @@
+# Evaluation of the ICON AE nhtyszuw (chkpt00150) on the 2024 inference: the AE's two target
+# channels over all samples, with RMSE, MAE and PSD.
+#
+# Used as the evaluation stage of config/pipeline_nhtyszuw_inf2024_eval.yml, which passes the
+# inference run id via --run-ids; that run then picks up default_streams below.
+#
+# PSD: ICON-CH1 is a regional unstructured grid, so the SHT path skips it (it needs a global
+# separable grid). The FFT path regrids by nearest neighbour onto a regular lat-lon grid at
+# psd_regrid_resolution; its default of 1 deg would leave ~9x14 cells over the ICON domain,
+# so 0.01 deg (~1 km, the native spacing) is used. lat_range default (-60, 60) covers 42-50.5N.
+
+global_plotting_options:
+  image_format: png
+  animation_format: mp4
+  dpi_val: 200
+  regions: ["icon"]        
+  ICON:
+    use_datashader: true   
+    add_borders: true      
+    feature_resolution: "10m"  
+    QV_850:
+      vmin: 0.0
+      vmax: 0.0125
+    U_10M:
+      vmin: -11.0
+      vmax: 11.0
+
+evaluation:
+  metrics:
+    - rmse
+    - mae
+    - psd:
+        psd_method: "fft"
+        psd_regrid_resolution: 0.01
+  regions: ["global"]    
+  score_plots: [metric_plots]
+  summary_dir: "/users/course_7dcd1b40/WeatherGenerator/plots/"
+  plot_ensemble: false
+  print_summary: true
+
+default_streams:
+  ICON:
+    channels: ["QV_850", "U_10M"]
+    evaluation:
+      sample: "all"
+      forecast_step: "all"
+    plotting:
+      sample: [15, 17, 64, 48, 38, 13, 34, 37, 65, 16]
+      forecast_step: "all"
+      data_plots:
+        - maps:
+            predictions: [image]
+            target: [image]
+
+run_ids: {}
