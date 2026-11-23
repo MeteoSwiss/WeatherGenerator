@@ -65,6 +65,9 @@ num_class_tokens: 0
 num_register_tokens: 0
 
 healpix_level: 5
+# Only run the global and forecasting engines on HEALPix cells that contain data (plus their
+# 1-ring). Useful for limited-area streams. Requires dense attention (att_dense_rate 1.0).
+latent_active_cells_only: False
 
 # Use 2D RoPE instead of traditional global positional encoding
 # When True: uses 2D RoPE based on healpix cell coordinates (lat/lon)

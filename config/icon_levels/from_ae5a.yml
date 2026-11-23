@@ -1,0 +1,4 @@
+# warm start from ae5a (qsh9znde), final checkpoint
+load_chkpt:
+  run_id: qsh9znde
+  mini_epoch: 150  # final AE checkpoint; fails loudly if the AE chain did not finish

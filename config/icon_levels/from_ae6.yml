@@ -1,0 +1,4 @@
+# warm start from ae6 (tfbbl2is), final checkpoint
+load_chkpt:
+  run_id: tfbbl2is
+  mini_epoch: 150  # final AE checkpoint; fails loudly if the AE chain did not finish

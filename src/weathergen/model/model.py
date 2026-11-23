@@ -39,7 +39,11 @@ from weathergen.model.engines import (
 )
 from weathergen.model.layers import MLP, NamedLinear
 from weathergen.model.norms import AdaLayerNorm
-from weathergen.model.utils import get_num_parameters
+from weathergen.model.utils import (
+    apply_on_token_subset,
+    get_active_token_idxs,
+    get_num_parameters,
+)
 from weathergen.utils.distributed import is_root
 from weathergen.utils.utils import get_dtype, is_stream_forcing
 
@@ -378,6 +382,13 @@ class Model(torch.nn.Module):
             cf, self.sources_size, self.targets_num_channels, self.targets_coords_size
         )
 
+        if cf.get("latent_active_cells_only", False):
+            # local (block) attention uses a fixed sequence length over all cells
+            assert cf.ae_global_att_dense_rate == 1.0 and cf.forecast_att_dense_rate == 1.0, (
+                "latent_active_cells_only requires ae_global_att_dense_rate == 1.0 "
+                "and forecast_att_dense_rate == 1.0"
+            )
+
         mode_cfg = cf.training_config
         if cf.fe_num_blocks > 0:
             self.forecast_engine = ForecastingEngine(cf, mode_cfg, self.num_healpix_cells)
@@ -683,7 +694,10 @@ class Model(torch.nn.Module):
 
         output = ModelOutput(batch.get_output_len())
 
-        tokens, posteriors = self.encoder(model_params, batch)
+        # optional: restrict global/forecast attention to cells that contain data
+        active_idxs = get_active_token_idxs(self.cf, model_params, batch)
+
+        tokens, posteriors = self.encoder(model_params, batch, active_idxs)
         output.add_latent_prediction(0, "posteriors", posteriors)
 
         # recover batch dimension and separate input_steps
@@ -698,10 +712,16 @@ class Model(torch.nn.Module):
             without_grad = p_fwd and self.training and step != max(batch.get_output_idxs())
             if without_grad:
                 # Pushforward mode: advance tokens without grad; no decoding with torch.no_grad():
-                tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+                tokens = self.forecast_engine.add_latent_noise(tokens)
+                tokens = apply_on_token_subset(
+                    self.forecast_engine, tokens, active_idxs, model_params.rope_coords, step
+                )
                 continue
 
-            tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+            tokens = self.forecast_engine.add_latent_noise(tokens)
+            tokens = apply_on_token_subset(
+                self.forecast_engine, tokens, active_idxs, model_params.rope_coords, step
+            )
             # decoder predictions
             output = self.predict_decoders(model_params, step, tokens, batch, output)
             # latent predictions (raw and with SSL heads)

@@ -1,0 +1,4 @@
+# warm start from ae6a (oszd0duo), final checkpoint
+load_chkpt:
+  run_id: oszd0duo
+  mini_epoch: 150  # final AE checkpoint; fails loudly if the AE chain did not finish

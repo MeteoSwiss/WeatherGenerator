@@ -540,6 +540,9 @@ class IdentityEngine(torch.nn.Module):
     def forward(self, tokens, *args, **kwargs):
         return tokens
 
+    def add_latent_noise(self, tokens):
+        return tokens
+
 
 class ForecastingEngine(torch.nn.Module):
     name: "ForecastingEngine"
@@ -621,13 +624,19 @@ class ForecastingEngine(torch.nn.Module):
         for block in self.fe_blocks:
             block.apply(init_weights_final)
 
-    def forward(self, tokens, fstep, coords=None):
+    def add_latent_noise(self, tokens):
+        """Impute noise to the latent state (training only).
+
+        Kept separate from forward() so that the noise scale is computed on the full token
+        tensor, also when forward() only runs on the active cells (latent_active_cells_only).
+        """
         if self.training:
-            # Impute noise to the latent state
             noise_std = self.cf.get("fe_impute_latent_noise_std", 0.0)
             if noise_std > 0.0:
                 tokens = tokens + torch.randn_like(tokens) * torch.norm(tokens) * noise_std
+        return tokens
 
+    def forward(self, tokens, fstep, coords=None):
         aux_info = None
         for _b_idx, block in enumerate(self.fe_blocks):
             if isinstance(block, torch.nn.modules.normalization.LayerNorm):

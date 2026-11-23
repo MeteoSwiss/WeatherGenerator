@@ -1,0 +1,3 @@
+# straight forecasting: no warm start from an autoencoder
+load_chkpt:
+  run_id: null

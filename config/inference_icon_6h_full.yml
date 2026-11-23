@@ -1,0 +1,4 @@
+# Overlay for ICON 6h inference field plots: same stream as training (icon_6h) but with
+# max_num_targets: -1, so the whole target grid is decoded and written (training subsamples
+# 573990 points per sample, which leaves random holes in the maps).
+streams_directory: "./config/streams/icon_6h_full/"
