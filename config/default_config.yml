@@ -65,6 +65,21 @@ num_class_tokens: 0
 num_register_tokens: 0
 
 healpix_level: 5
+# Only run the global and forecasting engines on HEALPix cells that contain data (plus their
+# 1-ring). Useful for limited-area streams. Requires dense attention (att_dense_rate 1.0).
+latent_active_cells_only: False
+
+# Flow matching on the decoder outputs makes predictions probabilistic (model/flow_matching.py).
+# When enabled, the training loss is a velocity MSE and is not comparable to validation MSE.
+# Validation/inference draw num_members samples with num_sampling_steps Euler steps each
+# (decoder runs num_members x num_sampling_steps times, so validate less often).
+flow_matching:
+  enabled: False
+  num_sampling_steps: 8
+  num_members: 2
+  time_freqs: 16
+  dim_hidden: 256
+  seed: 1234
 
 # Use 2D RoPE instead of traditional global positional encoding
 # When True: uses 2D RoPE based on healpix cell coordinates (lat/lon)
@@ -226,6 +241,9 @@ validation_config:
 
   # run validation before training starts (mainly for model development)
   validate_before_training: False
+
+  # validate every n mini-epochs; the last mini-epoch is always validated
+  validate_every_n_mini_epochs: 1
 
 
 # test config; full test config is merge of validation and test config

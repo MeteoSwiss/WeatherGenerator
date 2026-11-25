@@ -25,6 +25,7 @@ from weathergen.model.engines import (
 # from weathergen.model.model import ModelParams
 from weathergen.model.parametrised_prob_dist import LatentInterpolator
 from weathergen.model.positional_encoding import positional_encoding_harmonic
+from weathergen.model.utils import apply_on_token_subset
 
 
 class EncoderModule(torch.nn.Module):
@@ -117,9 +118,12 @@ class EncoderModule(torch.nn.Module):
         # global assimilation engine
         self.ae_global_engine = GlobalAssimilationEngine(cf, self.num_healpix_cells)
 
-    def forward(self, model_params, batch):
+    def forward(self, model_params, batch, active_token_idxs=None):
         """
         Encoder forward
+
+        active_token_idxs: if given, the global engine only runs on these tokens
+        (see model.utils.get_active_token_idxs); the other tokens are passed through.
         """
 
         stream_cell_tokens = checkpoint(
@@ -130,11 +134,13 @@ class EncoderModule(torch.nn.Module):
             self.assimilate_local, model_params, stream_cell_tokens, batch, use_reentrant=False
         )
 
-        tokens_global = checkpoint(
-            self.ae_global_engine,
+        tokens_global = apply_on_token_subset(
+            lambda toks, coords: checkpoint(
+                self.ae_global_engine, toks, coords=coords, use_reentrant=False
+            ),
             tokens_global,
-            coords=model_params.rope_coords,
-            use_reentrant=False,
+            active_token_idxs,
+            model_params.rope_coords,
         )
 
         return tokens_global, posteriors

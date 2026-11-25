@@ -37,9 +37,14 @@ from weathergen.model.engines import (
     TargetPredictionEngine,
     TargetPredictionEngineClassic,
 )
+from weathergen.model.flow_matching import FlowMatchingEmbed
 from weathergen.model.layers import MLP, NamedLinear
 from weathergen.model.norms import AdaLayerNorm
-from weathergen.model.utils import get_num_parameters
+from weathergen.model.utils import (
+    apply_on_token_subset,
+    get_active_token_idxs,
+    get_num_parameters,
+)
 from weathergen.utils.distributed import is_root
 from weathergen.utils.utils import get_dtype, is_stream_forcing
 
@@ -378,6 +383,13 @@ class Model(torch.nn.Module):
             cf, self.sources_size, self.targets_num_channels, self.targets_coords_size
         )
 
+        if cf.get("latent_active_cells_only", False):
+            # local (block) attention uses a fixed sequence length over all cells
+            assert cf.ae_global_att_dense_rate == 1.0 and cf.forecast_att_dense_rate == 1.0, (
+                "latent_active_cells_only requires ae_global_att_dense_rate == 1.0 "
+                "and forecast_att_dense_rate == 1.0"
+            )
+
         mode_cfg = cf.training_config
         if cf.fe_num_blocks > 0:
             self.forecast_engine = ForecastingEngine(cf, mode_cfg, self.num_healpix_cells)
@@ -539,6 +551,25 @@ class Model(torch.nn.Module):
                         stream_name=stream_name,
                     )
 
+        # flow matching: embedding of noisy target values and flow time into the query tokens
+        # (only created when enabled, so deterministic models keep the same parameters)
+        fm_cfg = cf.get("flow_matching", None) or {}
+        self.flow_matching_enabled = bool(fm_cfg.get("enabled", False))
+        if self.flow_matching_enabled:
+            assert cf.decoder_type != "Linear", "flow matching is not implemented for Linear"
+            self.fm_embed = nn.ModuleDict()
+            for i_stream, (stream_name, si) in enumerate(self.streams.items()):
+                if stream_name not in self.pred_heads:
+                    continue
+                assert si["pred_head"]["ens_size"] == 1, "flow matching needs pred_head ens_size 1"
+                src = si.get("pred_spatial_shared") or stream_name
+                self.fm_embed[stream_name] = FlowMatchingEmbed(
+                    self.targets_num_channels[i_stream],
+                    self.streams[src]["embed_target_coords"]["dim_embed"],
+                    num_freqs=int(fm_cfg.get("time_freqs", 16)),
+                    dim_hidden=int(fm_cfg.get("dim_hidden", 256)),
+                )
+
         # Latent heads for losses
         self.latent_heads = nn.ModuleDict()
         self.latent_pre_norm = nn.LayerNorm(cf.ae_global_dim_embed)
@@ -670,7 +701,9 @@ class Model(torch.nn.Module):
             z_pre_norm=tokens,
         )
 
-    def forward(self, model_params: ModelParams, batch: ModelBatch) -> ModelOutput:
+    def forward(
+        self, model_params: ModelParams, batch: ModelBatch, fm_targets: dict | None = None
+    ) -> ModelOutput:
         """Forward pass of the model
 
         Tokens are processed through the model components, which were defined in the create method.
@@ -683,7 +716,10 @@ class Model(torch.nn.Module):
 
         output = ModelOutput(batch.get_output_len())
 
-        tokens, posteriors = self.encoder(model_params, batch)
+        # optional: restrict global/forecast attention to cells that contain data
+        active_idxs = get_active_token_idxs(self.cf, model_params, batch)
+
+        tokens, posteriors = self.encoder(model_params, batch, active_idxs)
         output.add_latent_prediction(0, "posteriors", posteriors)
 
         # recover batch dimension and separate input_steps
@@ -698,16 +734,89 @@ class Model(torch.nn.Module):
             without_grad = p_fwd and self.training and step != max(batch.get_output_idxs())
             if without_grad:
                 # Pushforward mode: advance tokens without grad; no decoding with torch.no_grad():
-                tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+                tokens = self.forecast_engine.add_latent_noise(tokens)
+                tokens = apply_on_token_subset(
+                    self.forecast_engine, tokens, active_idxs, model_params.rope_coords, step
+                )
                 continue
 
-            tokens = self.forecast_engine(tokens, step, model_params.rope_coords)
+            tokens = self.forecast_engine.add_latent_noise(tokens)
+            tokens = apply_on_token_subset(
+                self.forecast_engine, tokens, active_idxs, model_params.rope_coords, step
+            )
             # decoder predictions
-            output = self.predict_decoders(model_params, step, tokens, batch, output)
+            output = self.predict_decoders(model_params, step, tokens, batch, output, fm_targets)
             # latent predictions (raw and with SSL heads)
             output = self.predict_latent(model_params, step, tokens, batch, output)
 
         return output
+
+    def _flow_matching_decode(
+        self, decode, stream_name, step, tc_tokens, t_coords_lens, fm_targets
+    ):
+        """Flow matching on the decoder outputs (see model/flow_matching.py).
+
+        Training (fm_targets given): returns x0 + v for one random flow time per sample, so that
+        MSE against the target equals the velocity loss MSE(v, x1 - x0).
+        Otherwise: Euler sampling from noise, returns num_members samples [E, P, C].
+        """
+        cfg = self.cf.flow_matching
+        fm_embed = self.fm_embed[stream_name]
+        num_points = tc_tokens.shape[0]
+        num_ch = fm_embed.lin_in.in_features - 2 * fm_embed.num_freqs
+        device = tc_tokens.device
+
+        if fm_targets is not None:
+            x1 = torch.cat([t.to(device) for t in fm_targets[stream_name][step]]).float()
+            assert x1.shape == (num_points, num_ch), (x1.shape, num_points, num_ch)
+            x1 = torch.nan_to_num(x1, nan=0.0)  # missing targets are masked in the loss
+            t_sample = torch.rand(len(t_coords_lens), device=device)
+            t = torch.repeat_interleave(
+                t_sample, torch.tensor(t_coords_lens, device=device)
+            ).unsqueeze(1)
+            x0 = torch.randn_like(x1)
+            x_t = (1.0 - t) * x0 + t * x1
+            v = decode(tc_tokens + fm_embed(x_t, t).to(tc_tokens.dtype))
+            return x0.unsqueeze(0) + v.float()
+
+        # sampling; fixed seed so validation noise is the same at every epoch
+        gen = torch.Generator(device=device).manual_seed(int(cfg.get("seed", 1234)) + step)
+        num_steps = int(cfg.get("num_sampling_steps", 8))
+        members = []
+        for _ in range(int(cfg.get("num_members", 2))):
+            x = torch.randn((num_points, num_ch), device=device, generator=gen)
+            for k in range(num_steps):
+                t = torch.full((num_points, 1), k / num_steps, device=device)
+                v = decode(tc_tokens + fm_embed(x, t).to(tc_tokens.dtype))
+                x = x + v[0].float() / num_steps
+            members.append(x)
+        return torch.stack(members)
+
+    @staticmethod
+    def _gather_target_cell_latents(model_params, tokens, s, tcls):
+        """1-ring neighbourhood latents for the cells that have target coordinates.
+
+        Args:
+            tokens: global tokens without aux tokens, reshapeable to s = [B, N, queries, D]
+            tcls: number of target coordinates per cell, flat over (batch, cell): [B * N]
+        Returns:
+            latents [K * 9 * queries, D], latent lens [K + 1] and output lens [K + 1]
+            (with a leading 0) for the K cells with tcls > 0, in (batch, cell) order.
+        """
+        num_cells = s[1]
+        sel = torch.nonzero(tcls > 0).squeeze(1)
+        b_idx, c_idx = sel // num_cells, sel % num_cells
+        # neighbours (and self) of each selected cell, offset into the flat (batch, cell) axis
+        nbors = model_params.hp_nbours[c_idx].long() + (b_idx * num_cells).unsqueeze(1)
+        tokens_nbors = tokens.reshape(s).flatten(0, 1)[nbors.flatten()].flatten(0, 1)
+
+        zero = torch.zeros(1, dtype=torch.int32, device=tcls.device)
+        nbors_lens = torch.full(
+            (sel.shape[0],), fill_value=nbors.shape[1], dtype=torch.int32, device=tcls.device
+        )
+        nbors_lens = torch.cat([zero, nbors_lens])
+        tcs_lens_sel = torch.cat([zero, tcls[sel].to(torch.int32)])
+        return tokens_nbors, nbors_lens, tcs_lens_sel
 
     def predict_latent(
         self,
@@ -739,6 +848,7 @@ class Model(torch.nn.Module):
         tokens: torch.Tensor,
         batch: ModelBatch,
         output: ModelOutput,
+        fm_targets: dict | None = None,
     ) -> ModelOutput:
         """
         Compute decoder-based predictions
@@ -763,16 +873,8 @@ class Model(torch.nn.Module):
         # remove register  and class tokens
         tokens = tokens[:, self.num_aux_tokens :]
 
-        # get 1-ring neighborhood for prediction
         batch_size = len(batch)
         s = [batch_size, self.num_healpix_cells, self.cf.ae_local_num_queries, tokens.shape[-1]]
-        idxs = model_params.hp_nbours.unsqueeze(0).repeat((batch_size, 1, 1)).flatten(0, 1)
-        tokens_nbors = tokens.reshape(s).flatten(0, 1)[idxs.flatten()].flatten(0, 1)
-        # TODO: precompute in model_params?
-        tokens_nbors_lens = torch.full(
-            (s[0] * s[1] + 1,), fill_value=9, dtype=torch.int32, device=tokens_nbors.device
-        )
-        tokens_nbors_lens[0] = 0
 
         # pair with tokens from assimilation engine to obtain target tokens
         for stream_name in self.streams.keys():
@@ -822,16 +924,37 @@ class Model(torch.nn.Module):
                         tcs_lens,
                     ).unsqueeze(0)  # add ensemble dim: shape is then [1, preds_per_coord, channels]
                 else:
-                    tc_tokens = self.target_token_engines[stream_name](
-                        latent=tokens_nbors,
-                        output=tc_tokens,
-                        latent_lens=tokens_nbors_lens,
-                        output_lens=tcs_lens,
-                        coordinates=t_coords,
+                    # only decode cells that have targets: empty cells produce no output,
+                    # so this gives the same predictions with far fewer attention sequences
+                    # (needed at level 7, where 196608 cells exceed the flash-attn grid limit)
+                    tokens_nbors, nbors_lens, tcs_lens_sel = self._gather_target_cell_latents(
+                        model_params, tokens, s, tcls
                     )
 
-                    # final prediction head to map back to physical space
-                    pred = self.pred_heads[stream_name](tc_tokens)
+                    def decode(
+                        query_tokens,
+                        stream_name=stream_name,
+                        latent=tokens_nbors,
+                        latent_lens=nbors_lens,
+                        output_lens=tcs_lens_sel,
+                        coordinates=t_coords,
+                    ):
+                        out = self.target_token_engines[stream_name](
+                            latent=latent,
+                            output=query_tokens,
+                            latent_lens=latent_lens,
+                            output_lens=output_lens,
+                            coordinates=coordinates,
+                        )
+                        # final prediction head to map back to physical space
+                        return self.pred_heads[stream_name](out)
+
+                    if self.flow_matching_enabled:
+                        pred = self._flow_matching_decode(
+                            decode, stream_name, step, tc_tokens, t_coords_lens, fm_targets
+                        )
+                    else:
+                        pred = decode(tc_tokens)
 
             # recover batch dimension (ragged, so as list)
             pred = torch.split(pred, t_coords_lens, dim=1)

@@ -73,6 +73,7 @@ fe_impute_latent_noise_std: 1e-4  # as in AE config (only active in the forecast
 forecast_att_dense_rate: 1.0
 
 healpix_level: 5
+latent_active_cells_only: False  # True = attend only over cells with data (ICON: 45 of 12288 at level 5)
 
 rope_2D: False  # must match the ICON AE (config_ae_icon.yml)
 

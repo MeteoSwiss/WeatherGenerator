@@ -26,6 +26,7 @@ import weathergen.common.config as config
 from weathergen.common.config import Config
 from weathergen.datasets.multi_stream_data_sampler import MultiStreamDataSampler
 from weathergen.model.ema import EMAModel
+from weathergen.model.flow_matching import flow_matching_targets
 from weathergen.model.model_interface import (
     init_model_and_shard,
 )
@@ -400,11 +401,15 @@ class Trainer(TrainerBase):
                 )
             self.train(mini_epoch)
 
-            if is_root():
-                logger.info(
-                    f"Mini_epoch {mini_epoch} of {self.training_cfg.num_mini_epochs}: validate."
-                )
-            self.validate(mini_epoch, self.validation_cfg, self.batch_size_validation_per_gpu)
+            # validate every n mini-epochs (and always after the last one)
+            val_every = int(self.validation_cfg.get("validate_every_n_mini_epochs", 1))
+            is_last = mini_epoch + 1 == self.training_cfg.num_mini_epochs
+            if (mini_epoch + 1) % val_every == 0 or is_last:
+                if is_root():
+                    logger.info(
+                        f"Mini_epoch {mini_epoch} of {self.training_cfg.num_mini_epochs}: validate."
+                    )
+                self.validate(mini_epoch, self.validation_cfg, self.batch_size_validation_per_gpu)
 
             if is_root():
                 logger.info(
@@ -470,9 +475,16 @@ class Trainer(TrainerBase):
                     dtype=self.mixed_precision_dtype,
                     enabled=cf.with_mixed_precision,
                 ):
+                    # flow matching: the model needs the target values to build noisy inputs
+                    fm_kwargs = (
+                        {"fm_targets": flow_matching_targets(batch)}
+                        if (cf.get("flow_matching", None) or {}).get("enabled", False)
+                        else {}
+                    )
                     preds = self.model(
                         model_params=self.model_params,
                         batch=batch.get_source_samples(),
+                        **fm_kwargs,
                     )
 
                     targets_and_auxs = {}
