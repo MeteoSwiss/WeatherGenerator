@@ -1,0 +1,2 @@
+# no forecasting engine: decoder predicts t+6h directly from the encoder latent
+fe_num_blocks: 0

@@ -1,0 +1,4 @@
+# warm start from ae7a (dunocfii), final checkpoint
+load_chkpt:
+  run_id: dunocfii
+  mini_epoch: 150  # final AE checkpoint; fails loudly if the AE chain did not finish

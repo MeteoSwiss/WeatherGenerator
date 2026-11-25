@@ -1,0 +1,12 @@
+# ICON level sweep, level 7, active cells only: forecasting without the forecasting engine
+# (fe_num_blocks 0), from scratch, biquzfrn. Est. ~1.7 s/step (x1.35) = ~12 h -> 2 jobs; 3 chained.
+stages:
+  - name: fc7anofe
+    stage: train
+    run_id: biquzfrn
+    config_files:
+      - config/icon_levels/runs/fc7anofe_biquzfrn.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

@@ -1,0 +1,22 @@
+# ICON level sweep, level 7, active cells only: AE dunocfii -> forecaster ptuos4y4.
+# Est. ~1.9 s/step on 1 node (x1.35) = ~13.5 h per run -> 2 jobs; 3 chained for margin.
+stages:
+  - name: ae7a
+    stage: train
+    run_id: dunocfii
+    config_files:
+      - config/icon_levels/runs/ae7a_dunocfii.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: fc7a
+    stage: train
+    run_id: ptuos4y4
+    config_files:
+      - config/icon_levels/runs/fc7a_ptuos4y4.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

@@ -1,0 +1,15 @@
+# Flow matching on the decoder outputs (src/weathergen/model/flow_matching.py).
+# Training loss = velocity MSE (not comparable to validation MSE). Validation draws 2 samples
+# with 8 Euler steps each; validation MSE is of the 2-member mean, CRPS uses both members.
+flow_matching:
+  enabled: True
+  num_sampling_steps: 8
+  num_members: 2
+validation_config:
+  validate_every_n_mini_epochs: 5
+  losses:
+    physical:
+      type: LossPhysical
+      loss_fcts:
+        mse: {}
+        kernel_crps: {}

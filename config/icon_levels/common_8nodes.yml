@@ -1,0 +1,4 @@
+# Shared by all ICON level runs (8 nodes x 4 GPUs, 4096 samples -> 128 steps per epoch).
+# checkpoint must be < 128, otherwise <run>_latest.chkpt is never written and chained jobs fail.
+train_logging:
+  checkpoint: 127

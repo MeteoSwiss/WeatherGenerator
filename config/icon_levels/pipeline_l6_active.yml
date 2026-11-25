@@ -1,0 +1,22 @@
+# ICON level sweep, level 6, active cells only: AE oszd0duo -> forecaster mxy7ypl7.
+# Est. ~2.4 s/step on 1 node (x1.35) = ~17 h per run -> 2 jobs; 3 chained for margin.
+stages:
+  - name: ae6a
+    stage: train
+    run_id: oszd0duo
+    config_files:
+      - config/icon_levels/runs/ae6a_oszd0duo.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: fc6a
+    stage: train
+    run_id: mxy7ypl7
+    config_files:
+      - config/icon_levels/runs/fc6a_mxy7ypl7.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

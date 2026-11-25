@@ -1,0 +1,41 @@
+# ICON level sweep, level 6, all cells (previous implementation): AE tfbbl2is -> forecaster j8rop4bs.
+# Forecaster est. ~9.5 s/step on 1 node (x1.35 on 8 nodes) = ~68 h -> more than 4 x 12h jobs,
+# so each run gets a continuation stage (run_id == from_run_id, resumes from _latest).
+stages:
+  - name: ae6
+    stage: train
+    run_id: tfbbl2is
+    config_files:
+      - config/icon_levels/runs/ae6_tfbbl2is.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: ae6cont
+    stage: train
+    run_id: tfbbl2is
+    from_run_id: tfbbl2is
+    chain_jobs: 2
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: fc6
+    stage: train
+    run_id: j8rop4bs
+    config_files:
+      - config/icon_levels/runs/fc6_j8rop4bs.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: fc6cont
+    stage: train
+    run_id: j8rop4bs
+    from_run_id: j8rop4bs
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

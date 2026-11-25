@@ -1,0 +1,24 @@
+# ICON level sweep, level 5, active cells only: AE qsh9znde -> forecaster e0iapcmk (150 epochs each).
+# Compared against the previous level-5 all-cells runs 639zhq8b -> klet59g5.
+# Each stage uses one merged config (config/icon_levels/runs/), since MLflow rejects keys logged twice.
+# Est. ~3 x 12h jobs each on 8 nodes; 4 chained for margin (surplus jobs only re-save chkpt 150).
+stages:
+  - name: ae5a
+    stage: train
+    run_id: qsh9znde
+    config_files:
+      - config/icon_levels/runs/ae5a_qsh9znde.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
+
+  - name: fc5a
+    stage: train
+    run_id: e0iapcmk
+    config_files:
+      - config/icon_levels/runs/fc5a_e0iapcmk.yml
+    chain_jobs: 4
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

@@ -1,0 +1,13 @@
+# ICON level sweep, level 7, active cells only: straight forecasting baseline w0sfaupk
+# (no AE warm start). Est. ~13.5 h -> 2 jobs; 3 chained for margin.
+# (sl0qymz7 was dropped: a failed launch left an MLflow run with conflicting params.)
+stages:
+  - name: fc7ascratch
+    stage: train
+    run_id: w0sfaupk
+    config_files:
+      - config/icon_levels/runs/fc7ascratch_w0sfaupk.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"

@@ -1,0 +1,2 @@
+# attend only over HEALPix cells with data (+1-ring), see model/utils.py
+latent_active_cells_only: True

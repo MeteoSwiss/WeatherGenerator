@@ -1,0 +1,13 @@
+# ICON level 7, active cells, no forecasting engine, from scratch, WITH flow matching: mfepog1k.
+# Same as biquzfrn except flow matching, validation every 5 mini-epochs and CRPS in validation.
+# biquzfrn did ~106 epochs per 12 h job with validation every epoch; 3 chained for margin.
+stages:
+  - name: fc7anofefm
+    stage: train
+    run_id: mfepog1k
+    config_files:
+      - config/icon_levels/runs/fc7anofefm_mfepog1k.yml
+    chain_jobs: 3
+    nodes: 8
+    slurm_args:
+      - "--time=12:00:00"
