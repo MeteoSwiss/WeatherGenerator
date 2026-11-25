@@ -93,29 +93,19 @@ class TokenizerMasking(Tokenizer):
         """ """
 
         mask_tokens, mask_channels = None, None
-        num_tokens = torch.tensor([len(t) for t in idxs_cells_lens]).sum().item()
+        tokens_in_cell = np.fromiter(
+            (len(t) for t in idxs_cells_lens), np.int64, len(idxs_cells_lens)
+        )
+        num_tokens = int(tokens_in_cell.sum())
 
         # If there are no tokens, return empty lists.
         if num_tokens == 0:
             return (mask_tokens, mask_channels)
 
-        # TODO, TODO, TODO: use np.repeat
-        # https://stackoverflow.com/questions/26038778/repeat-each-values-of-an-array-different-times
         # build token level mask: for each cell replicate the keep flag across its tokens
-        token_level_flags: list[np.typing.NDArray] = []
-        for km, lens_cell in zip(mask, idxs_cells_lens, strict=True):
-            num_tokens_cell = len(lens_cell)
-            if num_tokens_cell == 0:
-                continue
-            token_level_flags.append(
-                np.ones(num_tokens_cell, dtype=bool)
-                if km
-                else np.zeros(num_tokens_cell, dtype=bool)
-            )
-        if token_level_flags:
-            mask_tokens = np.concatenate(token_level_flags)
-        else:
-            mask_tokens = np.array([], dtype=bool)
+        mask = np.asarray(mask)
+        assert mask.shape[0] == tokens_in_cell.shape[0], "cell mask and cells do not match"
+        mask_tokens = np.repeat(mask.astype(bool), tokens_in_cell)
 
         return (mask_tokens, mask_channels)
 

@@ -6,10 +6,9 @@ from torch import Tensor
 
 from weathergen.common.io import IOReaderData
 from weathergen.datasets.utils import (
-    locs_to_cell_coords_ctrs,
-    locs_to_ctr_coords,
     r3tos2,
     s2tor3,
+    vecs_to_rots,
 )
 
 # on some clusters our numpy version is pinned to be 1.x.x where the np.argsort does not
@@ -103,22 +102,76 @@ def hpy_cell_splits(coords: torch.tensor, hl: int):
       thetas : thetas in rad
       phis : phis in rad
     """
+    cells, groups, thetas, phis = _occupied_cell_groups(coords, hl)
+
+    hpy_idxs_ord_split = [np.array([], dtype=np.int64) for _ in range(12 * 4**hl)]
+    for b, x in zip(cells, groups, strict=True):
+        hpy_idxs_ord_split[b] = x
+
+    return (hpy_idxs_ord_split, thetas, phis)
+
+
+def _occupied_cell_groups(coords: torch.tensor, hl: int):
+    """Healpix cell of each point, grouped by cell, for the occupied cells only.
+
+    Returns
+      cells : sorted ids of the cells that contain at least one point
+      groups : for each of these cells, the point indices (sorted by cell, stable)
+      thetas, phis : coordinates in rad
+    """
     thetas, phis = theta_phi_to_standard_coords(coords)
     # healpix cells for all points
     hpy_idxs = ang2pix(2**hl, thetas, phis, nest=True)
 
-    # extract information to split according to cells by first sorting and then finding split idxs
+    # sort points by cell and split where the cell changes
     hpy_idxs_ord = np.argsort(hpy_idxs, **numpy_argsort_args)
-    splits = np.flatnonzero(np.diff(hpy_idxs[hpy_idxs_ord]))
+    cells, starts = np.unique(hpy_idxs[hpy_idxs_ord], return_index=True)
+    groups = np.split(hpy_idxs_ord, starts[1:]) if len(cells) > 0 else []
 
-    # extract per cell data
-    hpy_idxs_ord_temp = np.split(hpy_idxs_ord, splits + 1)
-    hpy_idxs_ord_split = [np.array([], dtype=np.int64) for _ in range(12 * 4**hl)]
-    # TODO: split smarter (with a augmented splits list?) so that this loop is not needed
-    for b, x in zip(np.unique(np.unique(hpy_idxs[hpy_idxs_ord])), hpy_idxs_ord_temp, strict=True):
-        hpy_idxs_ord_split[b] = x
+    return cells, groups, thetas, phis
 
-    return (hpy_idxs_ord_split, thetas, phis)
+
+def _hpy_splits_occupied(
+    coords: torch.Tensor, hl: int, token_size: int, pad_tokens: bool, offset_step: int = 0
+):
+    """Token index lists for the occupied cells only (see hpy_splits).
+
+    Only cells that contain points are processed, so the cost does not grow with the total
+    number of healpix cells (12 * 4**hl), which matters for limited-area data at high levels.
+
+    Returns
+      cells : ids of the occupied cells
+      idxs_ord : per occupied cell, the list of token index tensors
+      idxs_ord_lens : per occupied cell, the list of token lengths
+    """
+    cells, groups, thetas, _ = _occupied_cell_groups(coords, hl)
+
+    # pad to token size *and* offset by +1 to account for the index 0 that is added for the padding
+    offset = (1 if pad_tokens else 0) + offset_step
+    int32 = torch.int32
+    idxs_ord, idxs_ord_lens = [], []
+    for idxs in groups:
+        # if token_size is exceeed split based on latitude
+        # TODO: split by hierarchically traversing healpix scheme
+        ts = torch.argsort(thetas[idxs], stable=True)
+        # remainder for padding to token size
+        if pad_tokens:
+            n = len(idxs)
+            r = token_size - (n % token_size if n % token_size != 0 else token_size)
+        else:
+            r = 0
+        toks = list(
+            torch.split(
+                torch.cat(
+                    (torch.from_numpy(np.take(idxs, ts) + offset), torch.zeros(r, dtype=int32))
+                ),
+                token_size,
+            )
+        )
+        idxs_ord.append(toks)
+        idxs_ord_lens.append([len(a) for a in toks])
+
+    return cells, idxs_ord, idxs_ord_lens
 
 
 def hpy_splits(
@@ -133,42 +186,14 @@ def hpy_splits(
         idxs_ord_lens : lens of lists per cell
         (so that data[idxs_ord].split( idxs_ord_lens) provides per cell data)
     """
+    num_healpix_cells = 12 * 4**hl
+    idxs_ord = [[] for _ in range(num_healpix_cells)]
+    idxs_ord_lens = [[] for _ in range(num_healpix_cells)]
 
-    # list of data points per healpix cell
-    (hpy_idxs_ord_split, thetas, phis) = hpy_cell_splits(coords, hl)
-
-    # if token_size is exceeed split based on latitude
-    # TODO: split by hierarchically traversing healpix scheme
-    thetas_sorted = [torch.argsort(thetas[idxs], stable=True) for idxs in hpy_idxs_ord_split]
-    # remainder for padding to token size
-    if pad_tokens:
-        rem = [
-            token_size - (len(idxs) % token_size if len(idxs) % token_size != 0 else token_size)
-            for idxs in hpy_idxs_ord_split
-        ]
-    else:
-        rem = np.zeros(len(hpy_idxs_ord_split), dtype=np.int32)
-
-    # helper variables to split according to cells
-    # pad to token size *and* offset by +1 to account for the index 0 that is added for the padding
-    offset = (1 if pad_tokens else 0) + offset_step
-    int32 = torch.int32
-    idxs_ord = [
-        list(
-            torch.split(
-                torch.cat(
-                    (torch.from_numpy(np.take(idxs, ts) + offset), torch.zeros(r, dtype=int32))
-                ),
-                token_size,
-            )
-        )
-        if len(idxs) > 0
-        else []
-        for idxs, ts, r in zip(hpy_idxs_ord_split, thetas_sorted, rem, strict=True)
-    ]
-
-    # extract length and flatten nested list
-    idxs_ord_lens = [[len(a) for a in aa] for aa in idxs_ord]
+    cells, toks, lens = _hpy_splits_occupied(coords, hl, token_size, pad_tokens, offset_step)
+    for c, t, t_lens in zip(cells, toks, lens, strict=True):
+        idxs_ord[c] = t
+        idxs_ord_lens[c] = t_lens
 
     return idxs_ord, idxs_ord_lens
 
@@ -210,14 +235,43 @@ def tokenize_spacetime(
         rdata_cur = IOReaderData(
             rdata.coords[mask], rdata.geoinfos[mask], rdata.data[mask], rdata.datetimes[mask]
         )
-        idxs_cur, idxs_cur_lens = tokenize_space(rdata_cur, token_size, hl, pad_tokens, offset_step)
+        cells, idxs_cur, idxs_cur_lens = _hpy_splits_occupied(
+            rdata_cur.coords, hl, token_size, pad_tokens, offset_step
+        )
 
-        # collect data for all time steps
-        idxs_cells = [t + tc for t, tc in zip(idxs_cells, idxs_cur, strict=True)]
-        idxs_cells_lens = [t + tc_l for t, tc_l in zip(idxs_cells_lens, idxs_cur_lens, strict=True)]
+        # collect data for all time steps (only the cells that have data at this step)
+        for c, tc, tc_l in zip(cells, idxs_cur, idxs_cur_lens, strict=True):
+            idxs_cells[c] = idxs_cells[c] + tc
+            idxs_cells_lens[c] = idxs_cells_lens[c] + tc_l
         offset_step += mask.sum()
 
     return idxs_cells, idxs_cells_lens
+
+
+def _masked_counts_per_cell(idxs_cells_lens, mask_tokens):
+    """Per cell: number of kept tokens and number of kept data points (incl. token padding).
+
+    Vectorised over tokens; equivalent to looping over all cells, which is slow for
+    12 * 4**hl cells at high healpix levels.
+
+    Returns
+      tokens_per_cell : int64 tensor [num_cells]
+      masked_points_per_cell : int32 tensor [num_cells]
+    """
+    num_cells = len(idxs_cells_lens)
+    tokens_in_cell = np.fromiter((len(t) for t in idxs_cells_lens), np.int64, num_cells)
+    token_cell = np.repeat(np.arange(num_cells), tokens_in_cell)
+    token_len = np.fromiter((n for t in idxs_cells_lens for n in t), np.int64, token_cell.shape[0])
+    keep = np.asarray(mask_tokens, dtype=bool)
+
+    kept_cells = token_cell[keep]
+    tokens_per_cell = np.bincount(kept_cells, minlength=num_cells)
+    points_per_cell = np.bincount(kept_cells, weights=token_len[keep], minlength=num_cells)
+
+    return (
+        torch.from_numpy(tokens_per_cell.astype(np.int64)),
+        torch.from_numpy(points_per_cell.astype(np.int32)),
+    )
 
 
 def tokenize_apply_mask_source(
@@ -284,15 +338,7 @@ def tokenize_apply_mask_source(
         # data = data_padded[ : channel_mask]
 
     # local coords
-    num_tokens_per_cell = [len(idxs) for idxs in idxs_cells_lens]
-    mask_tokens_per_cell = torch.split(torch.from_numpy(mask_tokens), num_tokens_per_cell)
-    tokens_per_cell = torch.tensor([t.sum() for t in mask_tokens_per_cell])
-    masked_points_per_cell = torch.tensor(
-        [
-            torch.tensor([len(t) for t, m in zip(tt, mm, strict=False) if m]).sum()
-            for tt, mm in zip(idxs_cells, mask_tokens_per_cell, strict=False)
-        ]
-    ).to(dtype=torch.int32)
+    tokens_per_cell, masked_points_per_cell = _masked_counts_per_cell(idxs_cells_lens, mask_tokens)
     coords_local = get_source_coords_local(coords, hpy_verts_rots, masked_points_per_cell)
 
     # create tensor that contains all data
@@ -365,14 +411,7 @@ def tokenize_apply_mask_target(
         assert False, "to be implemented"
         # data = data_padded[ : channel_mask]
 
-    num_tokens_per_cell = [len(idxs) for idxs in idxs_cells_lens]
-    mask_tokens_per_cell = torch.split(torch.from_numpy(mask_tokens), num_tokens_per_cell)
-    masked_points_per_cell = torch.tensor(
-        [
-            torch.tensor([len(t) for t, m in zip(tt, mm, strict=False) if m]).sum()
-            for tt, mm in zip(idxs_cells, mask_tokens_per_cell, strict=False)
-        ]
-    ).to(dtype=torch.int32)
+    _, masked_points_per_cell = _masked_counts_per_cell(idxs_cells_lens, mask_tokens)
 
     # compute encoding of target coordinates used in prediction network
     if torch.tensor(idxs_lens).sum() > 0:
@@ -436,10 +475,26 @@ def get_target_coords_local(
     # target_coords_lens = [len(t) for t in target_coords]
     # tcs, target_coords = tcs_optimized(target_coords)
     target_coords = s2tor3(*theta_phi_to_standard_coords(coords))
-    tcs = torch.split(target_coords, masked_points_per_cell.tolist())
-
     if target_coords.shape[0] == 0:
         return torch.tensor([])
+
+    # cell index of every target point; points are ordered by cell. This replaces splitting
+    # into one tensor per cell, which is slow for 12 * 4**hl cells at high healpix levels.
+    point_cell = torch.repeat_interleave(
+        torch.arange(len(masked_points_per_cell)), masked_points_per_cell.to(torch.int64)
+    )
+    occupied_cells, point_occ = torch.unique(point_cell, return_inverse=True)
+
+    def cell_coords_ctrs(rots):
+        # = locs_to_cell_coords_ctrs(rots, per-cell split of target_coords)
+        return torch.bmm(rots[point_cell], target_coords.unsqueeze(-1)).squeeze(-1)
+
+    def ctr_coords(ctrs_r3):
+        # = torch.cat(locs_to_ctr_coords(ctrs_r3, per-cell split of target_coords)), with the
+        # (row-wise) rotations computed only for the occupied cells
+        ctrs_rots = vecs_to_rots(ctrs_r3[occupied_cells]).to(torch.float32)
+        return torch.bmm(ctrs_rots[point_occ], target_coords.unsqueeze(-1)).squeeze(-1)
+
     # target_geoinfos = torch.cat(target_geoinfos)
     # target_times = torch.cat(target_times)
 
@@ -460,7 +515,7 @@ def get_target_coords_local(
 
     ref = torch.tensor([1.0, 0.0, 0.0])
 
-    tcs_lens = torch.tensor([tt.shape[0] for tt in tcs], dtype=torch.int32)
+    tcs_lens = masked_points_per_cell.to(torch.int32)
     tcs_lens_mask = tcs_lens > 0
     tcs_lens = tcs_lens[tcs_lens_mask]
 
@@ -474,46 +529,36 @@ def get_target_coords_local(
     vls = vls.transpose(0, 1)
 
     zi = 0
-    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - locs_to_cell_coords_ctrs(
-        verts00_rots, tcs
-    )
+    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - cell_coords_ctrs(verts00_rots)
 
     zi = 3
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + vls.shape[-1])] = vls[0]
 
     zi = 15
-    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - locs_to_cell_coords_ctrs(
-        verts10_rots, tcs
-    )
+    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - cell_coords_ctrs(verts10_rots)
 
     zi = 18
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + vls.shape[-1])] = vls[1]
 
     zi = 30
-    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - locs_to_cell_coords_ctrs(
-        verts11_rots, tcs
-    )
+    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - cell_coords_ctrs(verts11_rots)
 
     zi = 33
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + vls.shape[-1])] = vls[2]
 
     zi = 45
-    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - locs_to_cell_coords_ctrs(
-        verts01_rots, tcs
-    )
+    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - cell_coords_ctrs(verts01_rots)
 
     zi = 48
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + vls.shape[-1])] = vls[3]
 
     zi = 60
-    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - locs_to_cell_coords_ctrs(
-        vertsmm_rots, tcs
-    )
+    a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + 3)] = ref - cell_coords_ctrs(vertsmm_rots)
 
     zi = 63
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + vls.shape[-1])] = vls[4]
 
-    tcs_ctrs = torch.cat([ref - torch.cat(locs_to_ctr_coords(c, tcs)) for c in nctrs], -1)
+    tcs_ctrs = torch.cat([ref - ctr_coords(c) for c in nctrs], -1)
     zi = 75
     a[..., (geoinfo_offset + zi) : (geoinfo_offset + zi + (3 * 8))] = tcs_ctrs
 
