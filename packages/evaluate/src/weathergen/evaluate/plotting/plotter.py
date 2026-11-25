@@ -676,6 +676,9 @@ class Plotter:
             "vmin": kw.pop("vmin", None),
             "vmax": kw.pop("vmax", None),
             "cmap": kw.pop("colormap", "coolwarm"),
+            "bias_cmap": kw.pop("bias_colormap", "coolwarm"),
+            # consumed by array_utils.common_ranges / bias_ranges, not a scatter kwarg
+            "range_percentile": kw.pop("range_percentile", None),
             "colors": kw.pop("colors", None),
             "use_datashader": kw.pop("use_datashader", False),
             "levels": kw.pop("levels", None),
@@ -712,9 +715,9 @@ class Plotter:
         # Score maps always use a continuous blue->red colormap (overrides config)
         if str(tag).startswith("score_maps"):
             return SCORE_MAP_CMAP
-        # Bias maps always use coolwarm for visual consistency (overrides config)
+        # Bias maps use coolwarm by default; override with stream-level ``bias_colormap``
         if str(tag).startswith("bias"):
-            return plt.get_cmap("coolwarm")
+            return plt.get_cmap(opts["bias_cmap"])
         # Explicit colors take precedence over colormap
         elif isinstance(opts["colors"], oc.listconfig.ListConfig):
             return mpl.colors.ListedColormap(list(opts["colors"]))

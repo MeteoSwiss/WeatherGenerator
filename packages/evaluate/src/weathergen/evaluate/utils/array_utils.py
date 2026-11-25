@@ -101,6 +101,16 @@ def common_ranges(
                 for bound in ("vmin", "vmax"):
                     if isinstance(value.get(bound), int | float):
                         maps_config[var].setdefault(bound, value[bound])
+        # optional robust bounds: clip the colour range to the [p, 100 - p] percentiles so a
+        # few outliers do not wash out the map (set ``range_percentile`` at stream level)
+        pct = global_plotting_opts_stream.get("range_percentile", None)
+        if isinstance(pct, int | float) and pct > 0:
+            vals = _channel_values(data_tars, data_preds, var)
+            lo, hi = np.nanpercentile(vals, [pct, 100.0 - pct])
+            if not isinstance(maps_config[var].get("vmin"), (int | float)):
+                maps_config[var].update({"vmin": float(lo)})
+            if not isinstance(maps_config[var].get("vmax"), (int | float)):
+                maps_config[var].update({"vmax": float(hi)})
         # if vmax still missing, compute bound from data
         if not isinstance(maps_config[var].get("vmax"), (int | float)):
             list_max = calc_bounds(data_tars, data_preds, var, "max")
@@ -144,11 +154,27 @@ def bias_ranges(
             (p - t).sel(channel=var).values
             for t, p in zip(data_tars.values(), data_preds.values(), strict=False)
         ]
-        abs_max = float(
-            max(abs(np.concatenate(bias_vals).max()), abs(np.concatenate(bias_vals).min()))
-        )
+        pct = global_plotting_opts_stream.get("range_percentile", None)
+        if isinstance(pct, int | float) and pct > 0:
+            # robust symmetric range: (100 - p)th percentile of |bias|
+            flat = np.concatenate([np.ravel(b) for b in bias_vals])
+            abs_max = float(np.nanpercentile(np.abs(flat), 100.0 - pct))
+        else:
+            abs_max = float(
+                max(abs(np.concatenate(bias_vals).max()), abs(np.concatenate(bias_vals).min()))
+            )
         bias_config.update({var: {"vmax": abs_max, "vmin": -abs_max}})
     return bias_config
+
+
+def _channel_values(data_tars: dict, data_preds: dict, var: str) -> np.ndarray:
+    """Flattened target and prediction values of *var* across all fsteps."""
+    vals = [
+        np.ravel(da.sel(channel=var).values)
+        for das in (data_tars, data_preds)
+        for da in das.values()
+    ]
+    return np.concatenate(vals)
 
 
 def scalar_coord_to_dim(da: xr.DataArray, name: str, axis: int = -1) -> xr.DataArray:
